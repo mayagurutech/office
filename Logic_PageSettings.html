@@ -1,0 +1,221 @@
+<script>
+    // ==========================================
+    // MODULE: PAGE SETTINGS (EXCEL DOWNLOAD/UPLOAD)
+    // ==========================================
+
+    const pagesToManage = [
+        { id: 'view-gst-center', name: 'GST Center', services: ['GST'] },
+        { id: 'view-tds-center', name: 'TDS Returns', services: ['TDS Return'] },
+        { id: 'view-audits', name: 'Audit Status', services: [] }, 
+        { id: 'view-startups-subsidy', name: 'Startups & Subsidy', services: ['Startup', 'Subsidy'] }
+    ];
+
+    async function loadPagesTable() {
+        const tbody = document.getElementById('pages-list-tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        pagesToManage.forEach(page => {
+            tbody.innerHTML += `
+            <tr class="hover:bg-slate-50 transition">
+                <td class="px-5 py-4 font-black text-slate-800">${page.name}</td>
+                <td class="px-5 py-4 text-right">
+                    <div class="flex items-center justify-end gap-2">
+                        <button onclick="downloadPageExcel('${page.id}')" class="text-[10px] font-black text-indigo-600 hover:underline uppercase tracking-widest">
+                            <i class="fa-solid fa-download"></i> Download
+                        </button>
+                        <span class="text-slate-200">|</span>
+                        <label class="text-[10px] font-black text-emerald-600 hover:underline uppercase tracking-widest cursor-pointer">
+                            <i class="fa-solid fa-upload"></i> Upload
+                            <input type="file" class="hidden" onchange="uploadPageExcel('${page.id}', event)" accept=".xlsx, .xls">
+                        </label>
+                    </div>
+                </td>
+            </tr>`;
+        });
+    }
+
+    async function downloadPageExcel(pageId) {
+        try {
+            const page = pagesToManage.find(p => p.id === pageId);
+            if (!page) return;
+
+            // 1. Get clients for this page
+            let clients = [];
+            
+            // Fetch allowed services from visibility settings if applicable
+            let allowedServices = page.services;
+            if (pageId === 'view-gst-center' || pageId === 'view-tds-center') {
+                const { data: visSettings } = await supabaseClient.from('page_visibility_settings').select('enrolled_services').eq('page_id', pageId).single();
+                if (visSettings && visSettings.enrolled_services) {
+                    allowedServices = visSettings.enrolled_services;
+                }
+            }
+
+            if (allowedServices.length > 0) {
+                clients = globalClientsList.filter(c => {
+                    if (!c.standard_services) return false;
+                    const services = c.standard_services.split(',').map(s => s.trim().toLowerCase());
+                    return allowedServices.some(as => services.includes(as.toLowerCase()));
+                });
+            } else if (pageId === 'view-audits') {
+                const auditServices = globalServicesList.filter(s => s.is_audit).map(s => s.service_type);
+                clients = globalClientsList.filter(c => {
+                    if (!c.standard_services) return false;
+                    const services = c.standard_services.split(',').map(s => s.trim().toLowerCase());
+                    return auditServices.some(s => services.includes(s.toLowerCase()));
+                });
+            }
+
+            if (clients.length === 0) {
+                return alert("No clients found for this page.");
+            }
+
+            // 2. Fetch assignments for these clients
+            const { data: assignments } = await supabaseClient.from('client_assignments').select('*');
+            
+            // 3. Fetch rates (stored in task_logs with tag [PAGE_RATE])
+            const { data: rateLogs } = await supabaseClient.from('task_logs')
+                .select('note')
+                .ilike('note', `[PAGE_RATE] ${pageId}%`)
+                .order('timestamp', { ascending: false });
+
+            const ratesMap = {};
+            (rateLogs || []).forEach(log => {
+                const parts = log.note.split('|');
+                if (parts.length >= 3) {
+                    const clientId = parts[1];
+                    const rate = parts[2];
+                    if (ratesMap[clientId] === undefined) ratesMap[clientId] = rate;
+                }
+            });
+
+            // 4. Prepare data for Excel
+            const excelData = clients.map(c => {
+                const assignment = (assignments || []).find(a => a.client_id === c.client_id && page.services.includes(a.service_type));
+                let assigneeName = '';
+                if (assignment && assignment.maker_id) {
+                    const user = window.globalTeamMembers.find(u => u.id === assignment.maker_id);
+                    if (user) assigneeName = user.name;
+                }
+
+                return {
+                    "Client ID": c.client_id,
+                    "Client Name": c.display_name,
+                    "Assigned Person": assigneeName,
+                    "Rate Fixed": ratesMap[c.client_id] || 0
+                };
+            });
+
+            // 5. Generate Excel
+            const ws = XLSX.utils.json_to_sheet(excelData);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, "Page Data");
+
+            // NEW: Add a sheet for users list to enable dropdown validation
+            const users = window.globalTeamMembers || [];
+            if (users.length > 0) {
+                const usersData = users.map(u => ({ "Name": u.name }));
+                const wsUsers = XLSX.utils.json_to_sheet(usersData);
+                XLSX.utils.book_append_sheet(wb, wsUsers, "UsersList");
+
+                // Add data validation to the "Assigned Person" column (Column C)
+                const lastRow = clients.length + 1;
+                ws['!dataValidation'] = [
+                    {
+                        sqref: `C2:C${lastRow}`,
+                        type: 'list',
+                        formula1: `UsersList!$A$2:$A$${users.length + 1}`
+                    }
+                ];
+
+                // Hide the UsersList sheet
+                wb.Workbook = {
+                    Sheets: [
+                        { Hidden: 0 }, // Page Data
+                        { Hidden: 1 }  // UsersList
+                    ]
+                };
+            }
+
+            const fileName = `${page.name.replace(/\s+/g, '_')}_Data.xlsx`;
+            XLSX.writeFile(wb, fileName);
+
+        } catch (err) {
+            console.error("Download error:", err);
+            alert("Error generating download: " + err.message);
+        }
+    }
+
+    async function uploadPageExcel(pageId, event) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+            try {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, { type: 'array' });
+                const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+                const jsonData = XLSX.utils.sheet_to_json(firstSheet);
+
+                if (jsonData.length === 0) return alert("Excel sheet is empty!");
+
+                const page = pagesToManage.find(p => p.id === pageId);
+                if (!page) return;
+
+                const hostClientId = globalClientsList.find(c => c.is_active !== false)?.client_id;
+                if (!hostClientId) return alert("Error: No active client found to save configuration.");
+
+                let successCount = 0;
+
+                for (const row of jsonData) {
+                    const clientId = row["Client ID"];
+                    const assigneeName = row["Assigned Person"];
+                    const rate = row["Rate Fixed"];
+
+                    if (!clientId) continue;
+
+                    // 1. Update Assignment
+                    if (assigneeName) {
+                        const user = window.globalTeamMembers.find(u => u.name === assigneeName);
+                        if (user) {
+                            const serviceType = page.services[0] || 'General'; 
+                            
+                            await supabaseClient.from('client_assignments')
+                                .delete()
+                                .eq('client_id', clientId)
+                                .eq('service_type', serviceType);
+
+                            await supabaseClient.from('client_assignments').insert([{
+                                client_id: clientId,
+                                service_type: serviceType,
+                                maker_id: user.id
+                            }]);
+                        }
+                    }
+
+                    // 2. Update Rate
+                    if (rate !== undefined) {
+                        const note = `[PAGE_RATE] ${pageId}|${clientId}|${rate}`;
+                        await supabaseClient.from('task_logs').insert([{
+                            client_id: hostClientId,
+                            user_id: currentUser.id,
+                            note: note
+                        }]);
+                    }
+
+                    successCount++;
+                }
+
+                alert(`Successfully processed ${successCount} rows!`);
+                await refreshGlobalCache(); 
+                
+            } catch (err) {
+                console.error("Upload error:", err);
+                alert("Error processing upload: " + err.message);
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    }
+</script>

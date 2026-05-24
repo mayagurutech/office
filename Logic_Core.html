@@ -1,0 +1,2016 @@
+<script>
+    // ==========================================
+    // MODULE: APP CORE (Auth, Routing, State)
+    // ==========================================
+
+    // --- 1. INITIALIZE SUPABASE CONNECTION ---
+    const supabaseUrl = 'https://xeebucvvaxyglwjkkfvr.supabase.co';
+    const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhlZWJ1Y3Z2YXh5Z2x3amtrZnZyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ3Njc2NzUsImV4cCI6MjA5MDM0MzY3NX0.jrZXmI6gx-gyhczCC2cBSSaVh8KTfjCjhYapNEaDBEM';
+    
+    const supabaseClient = window.supabase.createClient(supabaseUrl, supabaseKey);
+
+    window.isGstPeriodOverdue = function(period) {
+        if (!period) return false;
+        const [y, m] = period.split('-').map(Number);
+        const dueDate = new Date(y, m, 20); // 20th of the next month (JS month is 0-indexed, so Date(y, m, 20) is 20th of month m+1)
+        return new Date() > dueDate;
+    };
+
+    window.isTdsPeriodOverdue = function(period) {
+        if (!period) return false;
+        const match = period.match(/(\d{4})-\d{2}\s+Q(\d)/);
+        if (!match) return false;
+        const year = parseInt(match[1]);
+        const quarter = parseInt(match[2]);
+        let dueDate;
+        if (quarter === 1) dueDate = new Date(year, 6, 31);
+        else if (quarter === 2) dueDate = new Date(year, 9, 31);
+        else if (quarter === 3) dueDate = new Date(year, 0, 31);
+        else if (quarter === 4) dueDate = new Date(year + 1, 4, 31);
+        return new Date() > dueDate;
+    };
+
+    window.getCurrentTdsPeriod = function() {
+        const today = new Date();
+        let year = today.getFullYear();
+        let month = today.getMonth() - 3; 
+        if (month < 0) { month += 12; year--; }
+
+        let fyStart, fyEnd, quarter;
+        if (month >= 3) {
+            fyStart = year;
+            fyEnd = year + 1;
+            quarter = Math.floor((month - 3) / 3) + 1;
+        } else {
+            fyStart = year - 1;
+            fyEnd = year;
+            quarter = 4;
+        }
+        const fyStr = `FY ${fyStart}-${fyEnd.toString().slice(-2)}`;
+        return `${fyStr} Q${quarter}`;
+    };
+
+
+    function toggleSidebar() {
+        const sidebar = document.getElementById('app-sidebar');
+        const overlay = document.getElementById('sidebar-overlay');
+        if (!sidebar || !overlay) return;
+        const isOpen = sidebar.classList.contains('translate-x-0');
+        if (isOpen) closeSidebar();
+        else openSidebar();
+    }
+
+    function openSidebar() {
+        const sidebar = document.getElementById('app-sidebar');
+        const overlay = document.getElementById('sidebar-overlay');
+        if (!sidebar || !overlay) return;
+        sidebar.classList.remove('-translate-x-full');
+        sidebar.classList.add('translate-x-0');
+        overlay.classList.remove('hidden');
+    }
+
+    function closeSidebar() {
+        const sidebar = document.getElementById('app-sidebar');
+        const overlay = document.getElementById('sidebar-overlay');
+        if (!sidebar || !overlay) return;
+        sidebar.classList.remove('translate-x-0');
+        sidebar.classList.add('-translate-x-full');
+        overlay.classList.add('hidden');
+    }
+
+    function setActiveNavButton(viewId) {
+        document.querySelectorAll('.app-nav-btn').forEach(btn => {
+            if (btn.dataset.view === viewId) btn.classList.add('active-nav');
+            else btn.classList.remove('active-nav');
+        });
+    }
+
+    // ==========================================
+    // MODULE: GLOBAL SEARCH (HEADER)
+    // ==========================================
+    function executeGlobalSearch() {
+        const query = document.getElementById('headerSearchInput').value;
+        
+        // Find which view is currently active
+        const activeView = Array.from(document.querySelectorAll('div[id^="view-"]')).find(v => !v.classList.contains('hidden'));
+        if (!activeView) return;
+
+        const viewId = activeView.id;
+
+        // Route search to specific module's search input and trigger their search function
+        if (viewId === 'view-clients') {
+            const el = document.getElementById('clientSearchInput');
+            if (el) { el.value = query; filterClients(); }
+        } else if (viewId === 'view-startups-subsidy') {
+            const el = document.getElementById('startupSubsidySearchInput');
+            if (el) { el.value = query; renderStartupsSubsidyTable(); }
+        } else if (viewId === 'view-audits') {
+            const el = document.getElementById('auditSearchInput');
+            if (el) { el.value = query; filterAudits(); }
+        } else if (viewId === 'view-gst-center') {
+            const el = document.getElementById('gstSearchInput');
+            if (el) { el.value = query; renderFilteredGSTTable(); }
+        } else if (viewId === 'view-debtors') {
+            const el = document.getElementById('debtorSearch');
+            if (el) { el.value = query; filterDebtors(); }
+        } else if (viewId === 'view-billing') {
+            const el = document.getElementById('billSearchInput');
+            if (el) { el.value = query; filterBills(); }
+        }
+    }
+
+    // --- 2. GLOBAL STATE ---
+    let currentUser = null;
+    let globalClientsList = [];
+    let globalServicesList = [];
+    let globalDebtorsList = [];
+    let globalTeamMembers = [];
+
+    // --- SHARED UTILS ---
+    async function fetchTeamMembers() {
+        if (globalTeamMembers.length === 0) {
+            const { data } = await supabaseClient.from('users').select('id, name').eq('is_archived', false);
+            if (data) globalTeamMembers = data || [];
+        }
+    }
+
+    // NEW: Totals tracking
+    let globalTotalClientsCount = 0;
+    let globalActiveTasksCount = 0;
+
+    // --- 3. AUTO-LOGIN INITIALIZATION ---
+    document.addEventListener("DOMContentLoaded", async function() {
+        await checkSavedSession();
+    });
+
+    async function checkSavedSession() {
+        const savedName = localStorage.getItem('office_os_user_name');
+        const savedPin = localStorage.getItem('office_os_user_pin');
+        const savedDate = localStorage.getItem('office_os_login_date');
+        const today = new Date().toDateString();
+        
+        if (savedName && savedPin && savedDate === today) {
+            // Attempt silent login
+            const { data, error } = await supabaseClient.from('users').select('*').ilike('name', savedName).eq('pin', savedPin).single();
+            
+            if (!error && data) {
+                currentUser = data;
+                document.getElementById('userNameDisplay').innerText = data.name.split(' ')[0];
+                document.getElementById('login-screen').classList.add('hidden');
+                document.getElementById('dashboard-screen').classList.remove('hidden');
+                
+                // Update avatar initials in sidebar and header
+                if (typeof updateShellUserDisplay === 'function') updateShellUserDisplay(data.name);
+
+                const now = new Date();
+                document.getElementById('currentDateDisplay').innerText = now.toLocaleDateString('en-IN', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
+                
+                await refreshGlobalCache();
+                switchView('view-dashboard');
+            } else {
+                // If saved credentials are no longer valid, clear them
+                localStorage.removeItem('office_os_user_name');
+                localStorage.removeItem('office_os_user_pin');
+                localStorage.removeItem('office_os_login_date');
+            }
+        } else {
+            // Force login in the morning
+            if (savedDate && savedDate !== today) {
+                localStorage.removeItem('office_os_user_name');
+                localStorage.removeItem('office_os_user_pin');
+                localStorage.removeItem('office_os_login_date');
+            }
+        }
+    }
+
+    // --- AUTHENTICATION ---
+    async function attemptLogin() {
+        const name = document.getElementById('loginName').value.trim();
+        const pin = document.getElementById('loginPin').value;
+        const err = document.getElementById('loginError');
+        const btn = document.getElementById('loginBtn');
+
+        if(!name || !pin) { err.innerText = "Please enter name and PIN."; err.classList.remove('hidden'); return; }
+        
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+
+        const { data, error } = await supabaseClient.from('users').select('*').ilike('name', name).eq('pin', pin).single();
+
+        if(error || !data) {
+            err.innerText = "Invalid Name or PIN.";
+            err.classList.remove('hidden');
+            btn.innerHTML = 'Sign In';
+        } else {
+            // SUCCESS: Save credentials for future auto-login
+            localStorage.setItem('office_os_user_name', name);
+            localStorage.setItem('office_os_user_pin', pin);
+            localStorage.setItem('office_os_login_date', new Date().toDateString());
+
+            currentUser = data;
+            const displayName = data.name.split(' ')[0];
+            document.getElementById('userNameDisplay').innerText = displayName;
+            document.getElementById('login-screen').classList.add('hidden');
+            document.getElementById('dashboard-screen').classList.remove('hidden');
+            
+            // Update avatar initials in sidebar and header
+            if (typeof updateShellUserDisplay === 'function') updateShellUserDisplay(data.name);
+
+            const today = new Date();
+            document.getElementById('currentDateDisplay').innerText = today.toLocaleDateString('en-IN', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' });
+            
+            await refreshGlobalCache();
+            switchView('view-dashboard');
+        }
+    }
+
+    function logout() {
+        // Clear saved session data
+        localStorage.removeItem('office_os_user_name');
+        localStorage.removeItem('office_os_user_pin');
+        localStorage.removeItem('office_os_login_date');
+
+        currentUser = null;
+        document.getElementById('loginName').value = '';
+        document.getElementById('loginPin').value = '';
+        document.getElementById('login-screen').classList.remove('hidden');
+        document.getElementById('dashboard-screen').classList.add('hidden');
+    }
+
+    // --- STATE MANAGEMENT ---
+    async function refreshGlobalCache() {
+        globalTeamMembers = []; // Reset team members cache to filter out archived users
+        const { data: clients } = await supabaseClient.from('clients').select('*').order('display_name');
+        if(clients) {
+            window.globalAllClientsList = clients;
+            globalClientsList = clients.filter(c => c.is_active !== false);
+            globalTotalClientsCount = clients.length;
+        }
+        
+        const { data: services } = await supabaseClient.from('services').select('*').order('service_type');
+        if(services) globalServicesList = services;
+
+        // NEW: Fetch all assignments once so all pages can filter by them!
+        const { data: assignments } = await supabaseClient.from('client_assignments').select('*');
+        if(assignments) window.globalAssignmentsList = assignments;
+
+        // Fetch team members globally
+        const { data: users } = await supabaseClient.from('users').select('id, name').neq('role', 'Archived');
+        if(users) window.globalTeamMembers = users;
+
+        // Count total active tasks for dashboard quick stat
+        const { count } = await supabaseClient.from('tasks').select('*', { count: 'exact', head: true }).neq('status', 'Completed');
+        globalActiveTasksCount = count || 0;
+    }
+
+    async function deduplicateClients() {
+        if (!confirm("Are you sure you want to delete duplicate clients based on PAN? This action cannot be undone.")) return;
+
+        const { data: clients } = await supabaseClient.from('clients').select('*');
+        if (!clients) return alert("No clients found or error fetching data.");
+
+        const groups = {};
+        clients.forEach(c => {
+            const pan = (c.pan_number || '').trim().toUpperCase();
+            if (!pan) return; // Skip if no PAN
+            if (!groups[pan]) groups[pan] = [];
+            groups[pan].push(c);
+        });
+
+        const deletes = [];
+        const allLogUpdates = [];
+
+        Object.keys(groups).forEach(pan => {
+            const group = groups[pan];
+            if (group.length <= 1) return;
+
+            // Sort so that clients WITH GST come first
+            group.sort((a, b) => {
+                const gstA = (a.gstin || '').trim();
+                const gstB = (b.gstin || '').trim();
+                if (gstA && !gstB) return -1;
+                if (!gstA && gstB) return 1;
+                return 0;
+            });
+
+            const kept = [];
+            const logUpdates = [];
+            
+            group.forEach(current => {
+                if (kept.length === 0) {
+                    kept.push(current);
+                    return;
+                }
+                
+                const currentGst = (current.gstin || '').trim().toUpperCase();
+                
+                let matchingKept = null;
+                const isDuplicate = kept.some(k => {
+                    const keptGst = (k.gstin || '').trim().toUpperCase();
+                    if (currentGst === keptGst || !currentGst) {
+                        matchingKept = k;
+                        return true;
+                    }
+                    return false;
+                });
+                
+                if (isDuplicate) {
+                    deletes.push(current.client_id);
+                    allLogUpdates.push({ from: current.client_id, to: matchingKept.client_id });
+                } else {
+                    kept.push(current); // Distinct GST, keep it!
+                }
+            });
+        });
+
+        // Run log updates first to avoid foreign key violations
+        if (allLogUpdates.length > 0) {
+            console.log(`[Deduplication] Moving logs for ${allLogUpdates.length} duplicates...`);
+            for (const update of allLogUpdates) {
+                const { error: logErr } = await supabaseClient
+                    .from('task_logs')
+                    .update({ client_id: update.to })
+                    .eq('client_id', update.from);
+                if (logErr) console.error(`Error moving logs from ${update.from} to ${update.to}:`, logErr);
+            }
+        }
+
+        if (deletes.length > 0) {
+            console.log(`[Deduplication] Deleting ${deletes.length} duplicate clients:`, deletes);
+            const { error } = await supabaseClient
+                .from('clients')
+                .delete()
+                .in('client_id', deletes);
+                
+            if (error) {
+                console.error("Error deleting duplicates:", error);
+                alert("Error deleting duplicates: " + error.message);
+            } else {
+                alert(`Successfully deleted ${deletes.length} duplicate clients!`);
+                await loadDashboardData(); // Refresh list
+            }
+        } else {
+            alert("No duplicate clients found based on the rules.");
+        }
+    }
+
+    // SCROLL MEMORY FIX
+    async function globalRefresh() {
+        const btn = document.getElementById('globalRefreshBtn');
+        if(btn) btn.classList.add('animate-spin');
+        
+        let activeView = 'view-dashboard';
+        let activeContainer = null;
+        
+        const views = document.querySelectorAll('div[id^="view-"]');
+        views.forEach(v => {
+            if(!v.classList.contains('hidden')) {
+                activeView = v.id;
+                activeContainer = v;
+            }
+        });
+
+        // 1. Snapshot scroll position
+        const currentScrollPos = activeContainer ? activeContainer.scrollTop : 0;
+
+        await refreshGlobalCache();
+        await loadDataForView(activeView);
+        
+        // 2. Wait longer (150ms) for HTML to fully draw, then restore position
+        if (activeContainer) {
+            setTimeout(() => {
+                activeContainer.scrollTop = currentScrollPos;
+            }, 150);
+        }
+        
+        if(btn) btn.classList.remove('animate-spin');
+    }
+
+    // --- BULLETPROOF ROUTING WITH ACCESS CONTROL ---
+    function switchView(viewId) {
+        
+        // 1. THE BOUNCER: Check if user has permission
+        if (currentUser && currentUser.name !== "Mayank") {
+            const myPerms = currentUser.permissions || [];
+            
+            // If the viewId isn't in their list, and it's not the default dashboard, block them!
+            if (!myPerms.includes(viewId) && viewId !== 'view-dashboard') {
+                alert("Access Denied: You do not have permission to view this module.");
+                return; // Stop the function here, don't load the page
+            }
+        }
+
+        // 2. STANDARD ROUTING
+        const allViews = document.querySelectorAll('div[id^="view-"]');
+        allViews.forEach(v => v.classList.add('hidden'));
+        
+        const target = document.getElementById(viewId);
+        if(target) target.classList.remove('hidden');
+        setActiveNavButton(viewId);
+        closeSidebar();
+        
+        loadDataForView(viewId);
+        
+        // Clear global search when switching views
+        const gSearch = document.getElementById('headerSearchInput');
+        if (gSearch) gSearch.value = '';
+
+        // 3. ADMIN PANEL TRIGGER
+        if(viewId === 'view-settings') {
+            if(typeof loadBillingFirms === 'function') loadBillingFirms();
+            if(typeof loadAdminPermissionsUI === 'function') loadAdminPermissionsUI(); // Boot up admin panel
+            if(typeof loadSubsidyCategories === 'function') loadSubsidyCategories();
+            if(typeof loadPagesTable === 'function') loadPagesTable();
+            if(typeof loadPendencyCounts === 'function') loadPendencyCounts();
+        }
+    }
+
+    function switchSettingsTab(tabId) {
+        document.querySelectorAll('.tab-content-settings').forEach(el => el.classList.add('hidden'));
+        document.getElementById(tabId).classList.remove('hidden');
+        
+        const buttons = [
+            { id: 'btn-tab-security', active: 'text-indigo-600 border-indigo-600', inactive: 'text-slate-400 border-transparent hover:text-slate-600' },
+            { id: 'btn-tab-financial', active: 'text-indigo-600 border-indigo-600', inactive: 'text-slate-400 border-transparent hover:text-slate-600' },
+            { id: 'btn-tab-services', active: 'text-indigo-600 border-indigo-600', inactive: 'text-slate-400 border-transparent hover:text-slate-600' },
+            { id: 'btn-tab-pages', active: 'text-indigo-600 border-indigo-600', inactive: 'text-slate-400 border-transparent hover:text-slate-600' },
+            { id: 'btn-tab-pendencies', active: 'text-indigo-600 border-indigo-600', inactive: 'text-slate-400 border-transparent hover:text-slate-600' },
+            { id: 'btn-tab-admin', active: 'text-indigo-600 border-indigo-600', inactive: 'text-slate-400 border-transparent hover:text-slate-600' }
+        ];
+        
+        buttons.forEach(b => {
+            const btn = document.getElementById(b.id);
+            if (!btn) return;
+            if (b.id === `btn-${tabId}`) {
+                btn.className = `pb-3 text-sm font-black ${b.active} transition-all uppercase tracking-widest`;
+            } else {
+                btn.className = `pb-3 text-sm font-black ${b.inactive} transition-all uppercase tracking-widest`;
+            }
+        });
+        
+        if (tabId === 'tab-pages' && typeof loadPagesTable === 'function') {
+            loadPagesTable();
+        }
+        if (tabId === 'tab-pendencies' && typeof loadPendencyCounts === 'function') {
+            loadPendencyCounts();
+        }
+    }
+
+    function openFilteredModule(viewId, filterSelectId) {
+        // Force the page's dropdown to "My Clients" before loading the page
+        const filterDropdown = document.getElementById(filterSelectId);
+        if (filterDropdown) {
+            filterDropdown.value = 'mine';
+        }
+        switchView(viewId);
+    }
+
+    async function loadDataForView(viewId) {
+        try {
+            if(viewId === 'view-dashboard' && typeof loadDashboardData === 'function') await loadDashboardData();
+            if(viewId === 'view-clients' && typeof loadClientsData === 'function') await loadClientsData();
+            if(viewId === 'view-startups-subsidy' && typeof loadStartupsSubsidyData === 'function') await loadStartupsSubsidyData();
+            if(viewId === 'view-tasks' && typeof loadTasksData === 'function') await loadTasksData();
+            if(viewId === 'view-audits' && typeof loadAuditsData === 'function') await loadAuditsData();
+            if(viewId === 'view-custom-tasks' && typeof loadCustomTasksData === 'function') await loadCustomTasksData();
+            if(viewId === 'view-compliance' && typeof loadComplianceData === 'function') await loadComplianceData();
+            if(viewId === 'view-debtors' && typeof loadDebtorsData === 'function') await loadDebtorsData();
+            console.log("Switching to billing, loadBillingData type:", typeof window.loadBillingData);
+            if(viewId === 'view-billing' && typeof window.loadBillingData === 'function') await window.loadBillingData();
+            
+            // NEW GST PAGE TRIGGER
+            if(viewId === 'view-gst-center' && typeof loadGSTCenterData === 'function') await loadGSTCenterData();
+            if(viewId === 'view-tds-center' && typeof loadTDSCenterData === 'function') await loadTDSCenterData();
+
+        } catch (err) {
+            console.error(`Error loading data for ${viewId}:`, err);
+        }
+    }
+
+    // --- SETTINGS LOGIC ---
+    async function updatePin() {
+        const oldPin = document.getElementById('oldPin').value;
+        const newPin = document.getElementById('newPin').value;
+        
+        if(!oldPin || !newPin || newPin.length !== 4) return alert("Please enter valid 4-digit PINs.");
+        if(oldPin !== currentUser.pin) return alert("Current PIN is incorrect.");
+        
+        const btn = document.getElementById('updatePinBtn');
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Updating...';
+
+        const { error } = await supabaseClient.from('users').update({ pin: newPin }).eq('id', currentUser.id);
+        
+        if(error) {
+            alert("Error updating PIN.");
+        } else {
+            alert("PIN updated successfully.");
+            currentUser.pin = newPin;
+            // Update saved PIN in local storage if they change it
+            localStorage.setItem('office_os_user_pin', newPin); 
+            
+            document.getElementById('oldPin').value = '';
+            document.getElementById('newPin').value = '';
+        }
+        btn.innerHTML = 'Update Security PIN';
+    }
+    
+
+
+    async function addBillingFirm() {
+        const name = document.getElementById('newFirmName').value.trim();
+        const gst = document.getElementById('newFirmGST').value.trim();
+        if(!name) return alert("Firm Name is required.");
+        
+        const btn = document.getElementById('addFirmBtn');
+        const ogText = btn.innerHTML;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+        
+        const { error } = await supabaseClient.from('billing_firms').insert([{ firm_name: name, gstin: gst }]);
+
+        if(error) alert("Error: " + error.message);
+        else {
+            document.getElementById('newFirmName').value = '';
+            document.getElementById('newFirmGST').value = '';
+            loadBillingFirms();
+        }
+        btn.innerHTML = ogText;
+    }
+
+    function getGstinDisplay(gstin) {
+        if (!gstin) return '-';
+        try {
+            const json = JSON.parse(gstin);
+            return json.gst || '-';
+        } catch (e) {
+            return gstin;
+        }
+    }
+
+    let globalBillingFirms = [];
+
+    async function loadBillingFirms() {
+        const list = document.getElementById('billing-firms-list');
+        if(!list) return;
+        list.innerHTML = '<tr><td colspan="3" class="text-center py-4 text-gray-500">Loading...</td></tr>';
+        const { data } = await supabaseClient.from('billing_firms').select('*');
+        list.innerHTML = '';
+        globalBillingFirms = data || [];
+
+        if(data && data.length > 0) {
+            data.forEach(f => {
+                const gstinStr = f.gstin || '';
+                list.innerHTML += `<tr class="border-b border-gray-100">
+                    <td class="px-4 py-3 font-bold text-gray-700">${f.firm_name}</td>
+                    <td class="px-4 py-3 text-gray-500 font-mono text-xs">${getGstinDisplay(f.gstin)}</td>
+                    <td class="px-4 py-3 text-right flex justify-end gap-2">
+                        <button onclick="openFirmSettingsModal('${f.id}')" class="text-indigo-600 hover:text-indigo-800 bg-indigo-50 p-1.5 rounded"><i class="fa-solid fa-gear"></i></button>
+                        <button onclick="deleteBillingFirm('${f.id}')" class="text-red-500 hover:text-red-700 bg-red-50 p-1.5 rounded"><i class="fa-solid fa-trash"></i></button>
+                    </td>
+                </tr>`;
+            });
+        } else {
+            list.innerHTML = '<tr><td colspan="3" class="text-center py-4 text-gray-500">No firms added yet.</td></tr>';
+        }
+
+        // Populate Default Firm Dropdowns
+        const defaultGstSelect = document.getElementById('defaultGstFirmSelect');
+        const defaultTdsSelect = document.getElementById('defaultTdsFirmSelect');
+        if (defaultGstSelect && defaultTdsSelect) {
+            let optionsHtml = '<option value="">-- No Default Firm --</option>';
+            if(data && data.length > 0) {
+                data.forEach(f => {
+                    optionsHtml += `<option value="${f.id}">${f.firm_name}</option>`;
+                });
+            }
+            defaultGstSelect.innerHTML = optionsHtml;
+            defaultTdsSelect.innerHTML = optionsHtml;
+
+            const { data: settingsData } = await supabaseClient.from('app_settings').select('*');
+            let savedGstFirm = '';
+            let savedTdsFirm = '';
+            if (settingsData) {
+                const gstSetting = settingsData.find(s => s.setting_key === 'office_os_default_gst_firm');
+                if (gstSetting) savedGstFirm = gstSetting.setting_value;
+                const tdsSetting = settingsData.find(s => s.setting_key === 'office_os_default_tds_firm');
+                if (tdsSetting) savedTdsFirm = tdsSetting.setting_value;
+            }
+            
+            if (savedGstFirm) defaultGstSelect.value = savedGstFirm;
+            if (savedTdsFirm) defaultTdsSelect.value = savedTdsFirm;
+        }
+    }
+
+    window.saveDefaultFirm = async function(type, value) {
+        const key = type === 'gst' ? 'office_os_default_gst_firm' : 'office_os_default_tds_firm';
+        // We do an explicit select then insert/update to be safe against PK missing configurations
+        const { data: existing } = await supabaseClient.from('app_settings').select('*').eq('setting_key', key);
+        if (existing && existing.length > 0) {
+            await supabaseClient.from('app_settings').update({ setting_value: value }).eq('setting_key', key);
+        } else {
+            await supabaseClient.from('app_settings').insert([{ setting_key: key, setting_value: value }]);
+        }
+    }
+
+    window.toggleFirmGstInput = function(checkbox) {
+        const gstInput = document.getElementById('settingsFirmGST');
+        if (checkbox.checked) {
+            gstInput.value = 'NO GST';
+            gstInput.disabled = true;
+            gstInput.classList.add('bg-slate-200', 'text-slate-400');
+            gstInput.classList.remove('bg-white', 'text-slate-800');
+        } else {
+            if (gstInput.value === 'NO GST') gstInput.value = '';
+            gstInput.disabled = false;
+            gstInput.classList.remove('bg-slate-200', 'text-slate-400');
+            gstInput.classList.add('bg-white', 'text-slate-800');
+        }
+    }
+
+    window.removeFirmLogo = function() {
+        document.getElementById('settingsFirmLogoInput').value = '';
+        document.getElementById('settingsFirmLogoBase64').value = '';
+        document.getElementById('settingsFirmLogoPreview').src = '';
+        document.getElementById('settingsFirmLogoPreviewContainer').classList.add('hidden');
+        document.getElementById('settingsFirmLogoRemoveBtn').classList.add('hidden');
+    }
+
+    window.handleLogoUpload = function(event) {
+        const file = event.target.files[0];
+        if (!file) return window.removeFirmLogo();
+        
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            const img = new Image();
+            img.onload = function() {
+                // Resize if too large
+                const MAX_WIDTH = 300;
+                const MAX_HEIGHT = 300;
+                let width = img.width;
+                let height = img.height;
+
+                if (width > MAX_WIDTH || height > MAX_HEIGHT) {
+                    if (width > height) { height = Math.round((height *= MAX_WIDTH / width)); width = MAX_WIDTH; } 
+                    else { width = Math.round((width *= MAX_HEIGHT / height)); height = MAX_HEIGHT; }
+                }
+
+                const canvas = document.createElement('canvas');
+                canvas.width = width; canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, width, height);
+                
+                const dataUrl = canvas.toDataURL('image/webp', 0.85); // Use webp for compression
+                document.getElementById('settingsFirmLogoBase64').value = dataUrl;
+                document.getElementById('settingsFirmLogoPreview').src = dataUrl;
+                document.getElementById('settingsFirmLogoPreviewContainer').classList.remove('hidden');
+                document.getElementById('settingsFirmLogoRemoveBtn').classList.remove('hidden');
+            }
+            img.src = e.target.result;
+        }
+        reader.readAsDataURL(file);
+    }
+
+    window.removeFirmQr = function() {
+        document.getElementById('settingsFirmQrInput').value = '';
+        document.getElementById('settingsFirmQrBase64').value = '';
+        document.getElementById('settingsFirmQrPreview').src = '';
+        document.getElementById('settingsFirmQrPreviewContainer').classList.add('hidden');
+        document.getElementById('settingsFirmQrRemoveBtn').classList.add('hidden');
+    }
+
+    window.handleQrUpload = function(event) {
+        const file = event.target.files[0];
+        if (!file) return window.removeFirmQr();
+        
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            const img = new Image();
+            img.onload = function() {
+                // Resize if too large
+                const MAX_WIDTH = 500;
+                const MAX_HEIGHT = 500;
+                let width = img.width;
+                let height = img.height;
+
+                if (width > MAX_WIDTH || height > MAX_HEIGHT) {
+                    if (width > height) { height = Math.round((height *= MAX_WIDTH / width)); width = MAX_WIDTH; } 
+                    else { width = Math.round((width *= MAX_HEIGHT / height)); height = MAX_HEIGHT; }
+                }
+
+                const canvas = document.createElement('canvas');
+                canvas.width = width; canvas.height = height;
+                const ctx = canvas.getContext('2d');
+                
+                // Fill white background just in case of transparency causing issues with some scanners
+                ctx.fillStyle = '#FFFFFF';
+                ctx.fillRect(0, 0, width, height);
+                ctx.drawImage(img, 0, 0, width, height);
+                
+                const dataUrl = canvas.toDataURL('image/png'); // Use lossless png for QR codes
+                document.getElementById('settingsFirmQrBase64').value = dataUrl;
+                document.getElementById('settingsFirmQrPreview').src = dataUrl;
+                document.getElementById('settingsFirmQrPreviewContainer').classList.remove('hidden');
+                document.getElementById('settingsFirmQrRemoveBtn').classList.remove('hidden');
+            }
+            img.src = e.target.result;
+        }
+        reader.readAsDataURL(file);
+    }
+
+    window.openFirmSettingsModal = function(id) {
+        const firm = globalBillingFirms.find(f => f.id === id);
+        if (!firm) return;
+        
+        document.getElementById('settingsFirmId').value = firm.id;
+        document.getElementById('settingsFirmName').value = firm.firm_name;
+        
+        let address = '';
+        let gst = firm.gstin || '';
+        let notes = '';
+        let startBillNo = '';
+        let billPrefix = '';
+        let noGst = false;
+        let email = '';
+        let phone = '';
+        let bankDetails = '';
+        let logo = '';
+        let qr = '';
+
+        try {
+            const json = JSON.parse(firm.gstin);
+            gst = json.gst || '';
+            address = json.address || '';
+            notes = json.notes || '';
+            startBillNo = json.starting_bill_number || '';
+            billPrefix = json.bill_prefix || '';
+            noGst = json.no_gst || false;
+            email = json.email || '';
+            phone = json.phone || '';
+            bankDetails = json.bank_details || '';
+            logo = json.logo || '';
+            qr = json.qr || '';
+        } catch (e) {
+            // Not JSON, use as plain GST
+        }
+
+        document.getElementById('settingsFirmGST').value = gst;
+        document.getElementById('settingsFirmNoGST').checked = noGst;
+        window.toggleFirmGstInput(document.getElementById('settingsFirmNoGST'));
+        document.getElementById('settingsFirmAddress').value = address;
+        document.getElementById('settingsFirmNotes').value = notes;
+        document.getElementById('settingsFirmStartBillNo').value = startBillNo;
+        document.getElementById('settingsFirmBillPrefix').value = billPrefix;
+        document.getElementById('settingsFirmEmail').value = email;
+        document.getElementById('settingsFirmPhone').value = phone;
+        document.getElementById('settingsFirmBankDetails').value = bankDetails;
+
+        if (logo) {
+            document.getElementById('settingsFirmLogoBase64').value = logo;
+            document.getElementById('settingsFirmLogoPreview').src = logo;
+            document.getElementById('settingsFirmLogoPreviewContainer').classList.remove('hidden');
+            document.getElementById('settingsFirmLogoRemoveBtn').classList.remove('hidden');
+        } else {
+            window.removeFirmLogo();
+        }
+
+        if (qr) {
+            document.getElementById('settingsFirmQrBase64').value = qr;
+            document.getElementById('settingsFirmQrPreview').src = qr;
+            document.getElementById('settingsFirmQrPreviewContainer').classList.remove('hidden');
+            document.getElementById('settingsFirmQrRemoveBtn').classList.remove('hidden');
+        } else {
+            window.removeFirmQr();
+        }
+
+        document.getElementById('firmSettingsModal').classList.remove('hidden');
+    }
+
+    window.closeFirmSettingsModal = function() {
+        document.getElementById('firmSettingsModal').classList.add('hidden');
+    }
+
+    window.saveFirmSettings = async function() {
+        const id = document.getElementById('settingsFirmId').value;
+        const gst = document.getElementById('settingsFirmGST').value.trim() === 'NO GST' ? '' : document.getElementById('settingsFirmGST').value.trim();
+        const noGst = document.getElementById('settingsFirmNoGST').checked;
+        const address = document.getElementById('settingsFirmAddress').value.trim();
+        const notes = document.getElementById('settingsFirmNotes').value.trim();
+        const startBillNo = document.getElementById('settingsFirmStartBillNo').value.trim();
+        const billPrefix = document.getElementById('settingsFirmBillPrefix').value.trim();
+        const email = document.getElementById('settingsFirmEmail').value.trim();
+        const phone = document.getElementById('settingsFirmPhone').value.trim();
+        const bankDetails = document.getElementById('settingsFirmBankDetails').value.trim();
+        const logo = document.getElementById('settingsFirmLogoBase64').value;
+        const qr = document.getElementById('settingsFirmQrBase64').value;
+
+        const settings = {
+            gst: gst,
+            no_gst: noGst,
+            address: address,
+            notes: notes,
+            starting_bill_number: startBillNo,
+            bill_prefix: billPrefix,
+            email: email,
+            phone: phone,
+            bank_details: bankDetails,
+            logo: logo,
+            qr: qr
+        };
+
+        const jsonStr = JSON.stringify(settings);
+
+        const { error } = await supabaseClient
+            .from('billing_firms')
+            .update({ gstin: jsonStr })
+            .eq('id', id);
+
+        if (error) alert("Error saving settings: " + error.message);
+        else {
+            alert("Settings saved successfully!");
+            closeFirmSettingsModal();
+            loadBillingFirms();
+        }
+    }
+
+    async function deleteBillingFirm(id) {
+        if(!confirm("Delete this billing firm?")) return;
+        await supabaseClient.from('billing_firms').delete().eq('id', id);
+        loadBillingFirms();
+    }
+
+    // ==========================================
+    // MODULE: ADMIN ACCESS CONTROL (DRAWER VERSION)
+    // ==========================================
+
+    // THE MASTER REGISTRY: Add new pages/features here in the future!
+    const appFeatures = [
+        { id: "view-dashboard", name: "Dashboard (Home)", category: "Pages" },
+        { id: "view-clients", name: "Client Directory", category: "Pages" },
+        { id: "view-startups-subsidy", name: "Startups and subsidy", category: "Pages" },
+        { id: "view-tasks", name: "Task Board", category: "Pages" },
+        { id: "view-audits", name: "Audit Status", category: "Pages" },
+        { id: "view-custom-tasks", name: "Custom Tasks", category: "Pages" },
+        { id: "view-compliance", name: "Compliance", category: "Pages" },
+        { id: "view-debtors", name: "Debtors & Sync", category: "Pages" },
+        { id: "view-billing", name: "Billing & Invoices", category: "Pages" },
+        { id: "view-gst-center", name: "GST Control Center", category: "Pages" }, 
+        { id: "view-tds-center", name: "TDS Returns Page", category: "Pages" }, 
+        { id: "view-settings", name: "Settings & Setup", category: "Pages" },
+        { id: "action_delete_client", name: "Delete Clients", category: "High-Risk Actions" }
+    ];
+
+    async function loadAdminPermissionsUI() {
+        if (!currentUser || (currentUser.role !== "Admin" && currentUser.name !== "Mayank")) return;
+        
+        // Show the Admin Tab button
+        const adminTabBtn = document.getElementById('btn-tab-admin');
+        if (adminTabBtn) adminTabBtn.classList.remove('hidden');
+        
+        // Populate the dropdown directly
+        const btn = document.getElementById('adminUserDropdown');
+        if (btn && (!btn.innerHTML || btn.innerHTML.includes('Loading'))) {
+            btn.innerHTML = '<div class="text-sm text-gray-500"><i class="fa-solid fa-spinner fa-spin mr-2"></i>Loading users...</div>';
+            
+            const { data: users } = await supabaseClient.from('users').select('*').order('name');
+            window.adminUsersList = users || [];
+
+            let dropdownHtml = `<select id="adminUserSelect" onchange="renderUserPermissions(this.value)" class="w-full p-3 border border-gray-300 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 bg-gray-50 text-sm font-bold cursor-pointer">`;
+            dropdownHtml += `<option value="">-- Select Team Member --</option>`;
+            window.adminUsersList.forEach(u => {
+                const archivedLabel = u.is_archived ? ' [Archived]' : '';
+                const roleLabel = (u.name === "Mayank") ? ` (${u.role})` : '';
+                dropdownHtml += `<option value="${u.id}">${u.name}${roleLabel}${archivedLabel}</option>`;
+            });
+            dropdownHtml += `</select>`;
+
+            btn.innerHTML = dropdownHtml;
+            renderUserPermissions(""); // Reset state
+        }
+    }
+
+    async function openAdminDrawer() {
+        // No longer used as it's now a tab
+    }
+
+    function renderUserPermissions(userId) {
+        const container = document.getElementById('adminCheckboxes');
+        const archiveBtnText = document.getElementById('archiveUserBtnText');
+        const archiveBtn = document.getElementById('archiveUserBtn');
+        
+        if(!userId) { 
+            container.innerHTML = '<div class="text-center text-sm text-gray-400 mt-4">Select a user above to view permissions.</div>'; 
+            if (archiveBtn) archiveBtn.classList.add('hidden');
+            return; 
+        }
+
+        if (archiveBtn) archiveBtn.classList.remove('hidden');
+
+        const user = window.adminUsersList.find(u => u.id === userId);
+        const userPerms = user.permissions || []; 
+
+        if (user.is_archived) {
+            if (archiveBtnText) archiveBtnText.innerText = "Unarchive User";
+            if (archiveBtn) {
+                archiveBtn.classList.remove('bg-amber-500', 'hover:bg-amber-600');
+                archiveBtn.classList.add('bg-emerald-500', 'hover:bg-emerald-600');
+            }
+        } else {
+            if (archiveBtnText) archiveBtnText.innerText = "Archive User";
+            if (archiveBtn) {
+                archiveBtn.classList.remove('bg-emerald-500', 'hover:bg-emerald-600');
+                archiveBtn.classList.add('bg-amber-500', 'hover:bg-amber-600');
+            }
+        }
+
+        let html = '';
+        const categories = [...new Set(appFeatures.map(f => f.category))];
+
+        categories.forEach(cat => {
+            html += `<h4 class="text-[10px] font-bold text-gray-400 uppercase tracking-wider mt-4 mb-2 border-b border-gray-100 pb-1">${cat}</h4>`;
+            html += `<div class="space-y-2">`;
+            
+            appFeatures.filter(f => f.category === cat).forEach(feature => {
+                const isChecked = userPerms.includes(feature.id) ? 'checked' : '';
+                html += `
+                    <label class="flex items-center justify-between p-3 border border-gray-200 rounded-lg hover:bg-indigo-50/50 cursor-pointer transition bg-white shadow-sm">
+                        <span class="text-sm font-bold text-gray-700">${feature.name}</span>
+                        <input type="checkbox" class="perm-checkbox w-5 h-5 text-indigo-600 rounded focus:ring-indigo-500 cursor-pointer" value="${feature.id}" ${isChecked}>
+                    </label>`;
+            });
+            html += `</div>`;
+        });
+
+        container.innerHTML = html;
+    }
+
+    async function saveUserPermissions() {
+        const userId = document.getElementById('adminUserSelect').value;
+        if(!userId) return alert("Please select a team member first.");
+
+        const checkboxes = document.querySelectorAll('.perm-checkbox:checked');
+        const selectedPerms = Array.from(checkboxes).map(cb => cb.value);
+
+        const btn = document.getElementById('savePermsBtn');
+        const ogText = btn.innerHTML;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving...';
+
+        const { error } = await supabaseClient.from('users').update({ permissions: selectedPerms }).eq('id', userId);
+
+        if(error) {
+            alert("Error saving permissions: " + error.message);
+            btn.innerHTML = ogText;
+        } else {
+            const userIndex = window.adminUsersList.findIndex(u => u.id === userId);
+            if (userIndex > -1) window.adminUsersList[userIndex].permissions = selectedPerms;
+            
+            btn.innerHTML = '<i class="fa-solid fa-check"></i> Saved Successfully!';
+            setTimeout(() => {
+                btn.innerHTML = ogText;
+                closeAdminDrawer();
+            }, 1000);
+        }
+    }
+
+    async function toggleUserArchiveStatus() {
+        const userId = document.getElementById('adminUserSelect').value;
+        if(!userId) return alert("Please select a team member first.");
+
+        const user = window.adminUsersList.find(u => u.id === userId);
+        const isArchived = user.is_archived || false;
+        const newIsArchived = !isArchived;
+
+        if (user.name === "Mayank" && !isArchived && user.role === 'Admin') {
+            alert("You cannot archive the Admin user 'Mayank'.");
+            return;
+        }
+
+        const archiveBtnText = document.getElementById('archiveUserBtnText');
+        const ogText = archiveBtnText ? archiveBtnText.innerText : "Archive User";
+        if (archiveBtnText) archiveBtnText.innerText = "Processing...";
+
+        const { error } = await supabaseClient.from('users').update({ is_archived: newIsArchived }).eq('id', userId);
+
+        if(error) {
+            alert("Error updating user status: " + error.message);
+            if (archiveBtnText) archiveBtnText.innerText = ogText;
+        } else {
+            const userIndex = window.adminUsersList.findIndex(u => u.id === userId);
+            if (userIndex > -1) window.adminUsersList[userIndex].is_archived = newIsArchived;
+            
+            alert(`User ${isArchived ? 'Unarchived' : 'Archived'} successfully.`);
+            
+            await refreshGlobalCache();
+            
+            closeAdminDrawer();
+            openAdminDrawer();
+        }
+    }
+
+// ==========================================
+    // MODULE: DASHBOARD ENGINE (METRICS + AI)
+    // ==========================================
+    
+    // 🔴 PASTE YOUR API KEY HERE FOR THE MOTIVATIONAL MESSAGE
+    
+
+    async function loadDashboardData() {
+        if (!currentUser) return;
+
+        window.globalDashboardPulsePendingDetails = [];
+        window.globalDashboardPulseUpdatedDetails = [];
+
+        // Update Quick Stats
+        const totalClientsEl = document.getElementById('dash-total-clients');
+        if (totalClientsEl) totalClientsEl.innerText = globalTotalClientsCount;
+        const totalTasksEl = document.getElementById('dash-total-tasks');
+        if (totalTasksEl) totalTasksEl.innerText = globalActiveTasksCount;
+
+        const firstName = currentUser.name.split(' ')[0];
+        // Time-based dynamic greeting
+        const hour = new Date().getHours();
+        let greetingsList = [];
+        if (hour < 12) {
+            greetingsList = ["Good morning", "Rise and shine", "Ready to crush the day", "Let's win this morning"];
+        } else if (hour < 17) {
+            greetingsList = ["Good afternoon", "Keep up the momentum", "Halfway there", "Afternoon hustle"];
+        } else {
+            greetingsList = ["Good evening", "Wrapping up the day", "Evening grind", "Let's finish strong"];
+        }
+        const randomGreeting = greetingsList[Math.floor(Math.random() * greetingsList.length)];
+        document.getElementById('dash-greeting').innerHTML = `${randomGreeting}, ${firstName}!`;
+
+        // Bucket Counters
+        let myGstCount = 0, myAuditCount = 0, myCompCount = 0, myCustomCount = 0, myDebtorCount = 0, myTdsCount = 0;
+        let firmOverdue = 0, firmToday = 0;
+        let topPriorities = [];
+        
+        // Performance Math
+        let validTotalTasks = 0;
+        let completedTasks = 0;
+
+        // Pulse Coverage Tracking
+        let pendingWorkIds = new Set(); 
+
+        let myAssignments = [];
+        // --- 1. GST, DEBTORS & PORTFOLIO ENGINE ---
+        try {
+            const { data: dbAssignments } = await supabaseClient.from('client_assignments')
+                .select('*').eq('maker_id', currentUser.id);
+            myAssignments = dbAssignments || [];
+
+            if (myAssignments && myAssignments.length > 0) {
+                
+                // Fetch GST data, Ledger Balances, Audit Followup Logs, TDS Tracking, and Page Visibility in parallel
+                const currentTdsPeriod = window.getCurrentTdsPeriod ? window.getCurrentTdsPeriod() : '';
+                const [gstRes, ledgerRes, auditFollowupRes, tdsTrackingRes, pageVisRes] = await Promise.all([
+                    supabaseClient.from('gst_tracking').select('*'),
+                    supabaseClient.from('client_ledger_mapping').select('client_id, ledger_id, tally_ledgers(current_balance, next_followup)'),
+                    supabaseClient.from('task_logs').select('client_id, note').ilike('note', '%[AUDIT_FOLLOWUP]%').order('timestamp', { ascending: false }),
+                    currentTdsPeriod ? supabaseClient.from('tds_tracking').select('client_id, return_filed_status, form_16_status, billed_status').eq('period', currentTdsPeriod) : Promise.resolve({ data: [] }),
+                    supabaseClient.from('page_visibility_settings').select('*')
+                ]);
+                
+                const gstData = gstRes.data;
+                const ledgerMappings = ledgerRes.data || [];
+                const auditFollowupLogs = auditFollowupRes.data || [];
+                const enrolledAuditServices = pageVisRes.data ? (pageVisRes.data.find(p => p.page_id === 'view-audits')?.enrolled_services || []) : [];
+
+                // Build TDS tracking map for the current period
+                const tdsTrackingMap = {};
+                (tdsTrackingRes.data || []).forEach(r => { tdsTrackingMap[r.client_id] = r; });
+                
+                // Pre-calculate total balance owed by each client from Tally
+                let clientBalances = {};
+                let clientToLedgerMap = {}; // To track which ledger ID belongs to which client for pulse tracking
+                let ledgerFollowupMap = {}; // To track follow-up dates for debtor recovery
+                let latestAuditFollowupMap = {}; // To track latest follow-up date for audit
+                
+                auditFollowupLogs.forEach(log => {
+                    if (log.note && !latestAuditFollowupMap[log.client_id]) {
+                        const match = log.note.match(/\[AUDIT_FOLLOWUP\] Date: (.*?)(?:\s*\||$)/);
+                        if (match) {
+                            latestAuditFollowupMap[log.client_id] = match[1];
+                        }
+                    }
+                });
+                
+                ledgerMappings.forEach(m => {
+                    if (m.tally_ledgers) {
+                        const balStr = String(m.tally_ledgers.current_balance || '0');
+                        const balVal = parseFloat(balStr.replace(/[^0-9.-]+/g, "")) || 0;
+                        if (!clientBalances[m.client_id]) clientBalances[m.client_id] = 0;
+                        clientBalances[m.client_id] += balVal;
+                        
+                        if (balVal > 0) {
+                            if (!clientToLedgerMap[m.client_id]) clientToLedgerMap[m.client_id] = [];
+                            clientToLedgerMap[m.client_id].push(m.ledger_id);
+                            
+                            if (m.tally_ledgers.next_followup) {
+                                ledgerFollowupMap[m.ledger_id] = m.tally_ledgers.next_followup;
+                            }
+                        }
+                    }
+                });
+                
+                let today = new Date();
+                let prevMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+                let targetPeriod = `${prevMonth.getFullYear()}-${(prevMonth.getMonth() + 1).toString().padStart(2, '0')}`;
+
+                myAssignments.forEach(a => {
+                    let clientObj = globalClientsList.find(c => c.client_id === a.client_id);
+                    if (!clientObj || clientObj.is_active === false) return; // Skip archived
+
+                    const clientServicesStr = clientObj.standard_services ? clientObj.standard_services.toLowerCase() : '';
+
+                    // --- GST BUCKET LOGIC ---
+                    if (a.service_type && a.service_type.toLowerCase().includes('gst')) {
+                        if (!clientServicesStr.includes('gst')) return; // STRICT FILTER
+
+                        const clientGstRows = gstData ? gstData.filter(r => r.client_id === a.client_id) : [];
+                        const trackRecord = clientGstRows.find(r => r.period === targetPeriod) || {};
+                        const freq = clientObj.gst_frequency || 'Monthly';
+                        const isQuarterly = freq === 'Quarterly';
+                        
+                        let qMonthIdx = 3;
+                        if (targetPeriod) {
+                            const [y, mStr] = targetPeriod.split('-');
+                            const monthVal = parseInt(mStr);
+                            const rem = monthVal % 3;
+                            if (rem === 1) qMonthIdx = 1;
+                            else if (rem === 2) qMonthIdx = 2;
+                            else qMonthIdx = 3;
+                        }
+
+                        const dataPending = !trackRecord.is_data;
+                        const gstr1Pending = !trackRecord.is_gstr1 && (!isQuarterly || qMonthIdx === 3);
+                        const gstr3bPending = !trackRecord.is_gstr3b && (!isQuarterly || qMonthIdx === 3);
+
+                        // Tile = sum of all pending steps for this client
+                        const pendingStepsForClient = (dataPending ? 1 : 0) + (gstr1Pending ? 1 : 0) + (gstr3bPending ? 1 : 0);
+                        myGstCount += pendingStepsForClient;
+
+                        const caseHasPendingWork = pendingStepsForClient > 0;
+                        if (caseHasPendingWork) {
+                            pendingWorkIds.add(`gst:${a.client_id}`); // Track for Pulse
+                            window.globalDashboardPulsePendingDetails.push({
+                                id: `gst:${a.client_id}`,
+                                clientName: clientObj.display_name,
+                                serviceName: 'GST Return',
+                                pageName: 'GST Center',
+                                viewName: 'view-gst-center',
+                                isOverdue: window.isGstPeriodOverdue(targetPeriod),
+                                clientId: a.client_id,
+                                period: targetPeriod,
+                                type: 'gst'
+                            });
+                            
+                            const waitingOnClient = dataPending; 
+                            if (!waitingOnClient) validTotalTasks++; 
+                        } else {
+                            validTotalTasks++;
+                            completedTasks++;
+                        }
+                    } else if (a.service_type && a.service_type.toLowerCase().includes('tds')) {
+                        if (!clientServicesStr.includes('tds')) return; // STRICT FILTER
+
+                        const tdsTrack = tdsTrackingMap[a.client_id] || {};
+                        const returnStatus = tdsTrack.return_filed_status || 'Pending';
+                        const isNilReturn = returnStatus === 'NIL';
+
+                        // Count individual pending task-steps (matching TDS page stat tiles)
+                        if (!isNilReturn) {
+                            const filingPending = returnStatus !== 'Done';
+                            const form16Status = tdsTrack.form_16_status || 'Pending';
+                            const form16Pending = form16Status !== 'Done' && form16Status !== 'NIL';
+                            const billedStatus = tdsTrack.billed_status || 'Pending';
+                            const billingPending = billedStatus !== 'Done' && billedStatus !== 'NIL';
+
+                            // Tile = sum of all pending steps for this client
+                            const pendingStepsForClient = (filingPending ? 1 : 0) + (form16Pending ? 1 : 0) + (billingPending ? 1 : 0);
+                            myTdsCount += pendingStepsForClient;
+
+                            // Pulse = unique client/case with any pending step
+                            const caseHasPendingWork = filingPending || form16Pending || billingPending;
+                            if (caseHasPendingWork) {
+                                pendingWorkIds.add(`tds:${a.client_id}`);
+                                window.globalDashboardPulsePendingDetails.push({
+                                    id: `tds:${a.client_id}`,
+                                    clientName: clientObj.display_name,
+                                    serviceName: 'TDS Return',
+                                    pageName: 'TDS Returns',
+                                    viewName: 'view-tds-center',
+                                    isOverdue: window.isTdsPeriodOverdue(currentTdsPeriod),
+                                    clientId: a.client_id,
+                                    period: currentTdsPeriod,
+                                    type: 'tds'
+                                });
+                            }
+
+                            // Master Score
+                            validTotalTasks++;
+                            if (!caseHasPendingWork) completedTasks++;
+                        }
+                        // NIL return clients: fully done, excluded from tile & pulse
+                    } else if (
+                        a.service_type === 'Audit Status' || 
+                        (a.service_type && a.service_type.toLowerCase().includes('audit')) ||
+                        (enrolledAuditServices.some(as => a.service_type && a.service_type.toLowerCase() === as.toLowerCase()))
+                    ) {
+                        const hasAuditService = enrolledAuditServices.some(as => clientServicesStr.includes(as.toLowerCase())) || clientServicesStr.includes('audit');
+                        if (!hasAuditService) return; // STRICT FILTER
+                        // Audit logic
+                        if (clientObj.audit_status !== 'Completed') {
+                            myAuditCount++;
+                            validTotalTasks++;
+                            pendingWorkIds.add(`audit:${a.client_id}`);
+                            window.globalDashboardPulsePendingDetails.push({
+                                id: `audit:${a.client_id}`,
+                                clientName: clientObj.display_name,
+                                serviceName: 'Audit Status',
+                                pageName: 'Audits',
+                                viewName: 'view-audits',
+                                isOverdue: latestAuditFollowupMap[a.client_id] ? (new Date(latestAuditFollowupMap[a.client_id]) < new Date().setHours(0,0,0,0)) : false,
+                                clientId: a.client_id,
+                                type: 'audit'
+                            });
+                            
+                            // Audit follow-up priority check
+                            const fDate = latestAuditFollowupMap[a.client_id];
+                            if (fDate) {
+                                const dObj = new Date(fDate);
+                                const todayObj = new Date(new Date().toISOString().split('T')[0]);
+                                const diffDays = Math.ceil((dObj - todayObj) / (1000 * 60 * 60 * 24));
+                                
+                                if (diffDays <= 0) {
+                                    firmOverdue++;
+                                    if (diffDays === 0) firmToday++;
+                                    
+                                    topPriorities.push({
+                                        task_id: `audit:${a.client_id}`,
+                                        task_name: `Audit Status Follow-up`,
+                                        clientName: clientObj.display_name,
+                                        serviceName: 'Audit Status',
+                                        diffDays: diffDays
+                                    });
+                                }
+                            }
+                        } else {
+                            validTotalTasks++;
+                            completedTasks++;
+                        }
+                    } else if (a.service_type && !a.service_type.toLowerCase().includes('startup') && !a.service_type.toLowerCase().includes('subsidy') && a.service_type !== 'Debtor Recovery') {
+                        // Generic Compliances
+                        myCompCount++;
+                        validTotalTasks++;
+                        pendingWorkIds.add(`comp:${a.client_id}:${a.service_type}`);
+                        window.globalDashboardPulsePendingDetails.push({
+                            id: `comp:${a.client_id}:${a.service_type}`,
+                            clientName: clientObj.display_name,
+                            serviceName: a.service_type,
+                            pageName: 'Compliances',
+                            viewName: 'view-compliance',
+                            isOverdue: false, // Default compliance assignments don't have direct assignment-level due dates
+                            clientId: a.client_id,
+                            type: 'comp'
+                        });
+                    }
+
+                    if (a.service_type === 'Debtor Recovery') {
+                        const totalOwed = clientBalances[a.client_id] || 0; 
+                        
+                        if (totalOwed > 0) {
+                            myDebtorCount++;
+                            console.log(`DASHBOARD_DEBTOR_DEBUG: Client="${clientObj ? clientObj.display_name : 'Unknown'}" Balance=₹${totalOwed} Maker=${a.maker_id}`);
+                            validTotalTasks++; 
+                            // Track ledger IDs for pulse
+                            if (clientToLedgerMap[a.client_id]) {
+                                clientToLedgerMap[a.client_id].forEach(lid => {
+                                    pendingWorkIds.add(`debtor:${lid}`);
+                                    const fDate = ledgerFollowupMap[lid];
+                                    const isOverdue = fDate ? (new Date(fDate) < new Date().setHours(0,0,0,0)) : false;
+                                    window.globalDashboardPulsePendingDetails.push({
+                                        id: `debtor:${lid}`,
+                                        clientName: clientObj.display_name,
+                                        serviceName: 'Debtor Recovery',
+                                        pageName: 'Debtor Recovery',
+                                        viewName: 'view-debtors',
+                                        isOverdue: isOverdue,
+                                        ledgerId: lid,
+                                        type: 'debtor'
+                                    });
+                                });
+                            }
+
+                            // Calculate overdue/due today for user-specific debtors and add to topPriorities
+                            if (a.maker_id === currentUser.id && clientToLedgerMap[a.client_id]) {
+                                clientToLedgerMap[a.client_id].forEach(lid => {
+                                    const fDate = ledgerFollowupMap[lid];
+                                    if (fDate) {
+                                        const dObj = new Date(fDate);
+                                        const todayObj = new Date(new Date().toISOString().split('T')[0]);
+                                        const diffDays = Math.ceil((dObj - todayObj) / (1000 * 60 * 60 * 24));
+                                        
+                                        if (diffDays <= 0) {
+                                            if (diffDays < 0) firmOverdue++;
+                                            if (diffDays === 0) firmToday++;
+                                            
+                                            topPriorities.push({
+                                                task_id: `debtor:${lid}`,
+                                                task_name: `Debtor Collection Follow-up`,
+                                                clientName: clientObj.display_name,
+                                                serviceName: 'Debtor Recovery',
+                                                diffDays: diffDays
+                                            });
+                                        }
+                                    }
+                                });
+                            }
+                        } else {
+                            validTotalTasks++;
+                            completedTasks++;
+                        }
+                    }
+                });
+            }
+        } catch (e) { console.error("Portfolio Engine Error:", e); }
+
+        // --- 1.5 STARTUP & SUBSIDY ENGINE ---
+        let myStartupCount = 0;
+        try {
+            // Fetch all subsidies and assignments in parallel
+            const [subsidiesRes, assignmentsRes] = await Promise.all([
+                supabaseClient.from('client_subsidies').select('*'),
+                supabaseClient.from('client_assignments').select('*')
+            ]);
+            
+            const allSubsidies = subsidiesRes.data || [];
+            const allAssignments = assignmentsRes.data || [];
+            
+            // Filter assignments for the current user
+            const myUserAssignments = allAssignments.filter(a => a.maker_id === currentUser.id);
+            
+            allSubsidies.forEach(sub => {
+                const clientObj = globalClientsList.find(c => c.client_id === sub.client_id);
+                if (!clientObj || clientObj.is_active === false) return; // Skip archived clients
+                
+                // Determine if this specific case is assigned to the current user
+                const isSpecificAssigned = myUserAssignments.some(a => a.client_id === sub.client_id && a.service_type === sub.subsidy_name);
+                const isGenericAssigned = myUserAssignments.some(a => a.client_id === sub.client_id && (a.service_type === 'Startup' || a.service_type === 'Subsidy'));
+                
+                if (isSpecificAssigned || isGenericAssigned) {
+                    const status = sub.status || 'Pending';
+                    const isCompleted = status === 'Approved'; // "Approved" means completed/archived
+                    
+                    if (!isCompleted) {
+                        myStartupCount++;
+                    }
+                    
+                    // Connect with master score
+                    validTotalTasks++;
+                    if (isCompleted) {
+                        completedTasks++;
+                    } else {
+                        // Connect with productivity pulse
+                        pendingWorkIds.add(`subsidy:${sub.client_id}:${sub.subsidy_name}`);
+                        window.globalDashboardPulsePendingDetails.push({
+                            id: `subsidy:${sub.client_id}:${sub.subsidy_name}`,
+                            clientName: clientObj.display_name,
+                            serviceName: `${sub.subsidy_name} Case`,
+                            pageName: 'Startup & Subsidy',
+                            viewName: 'view-startups-subsidy',
+                            isOverdue: sub.next_followup_date ? (new Date(sub.next_followup_date) < new Date().setHours(0,0,0,0)) : false,
+                            clientId: sub.client_id,
+                            subsidyType: sub.subsidy_name,
+                            type: 'subsidy'
+                        });
+                    }
+                    
+                    // Connect with critical deadlines / top priorities:
+                    // If user cases are past followup date then it should come in top priorities list of dashboard.
+                    if (!isCompleted && sub.next_followup_date) {
+                        const dObj = new Date(sub.next_followup_date);
+                        const todayObj = new Date(new Date().toISOString().split('T')[0]);
+                        const diffDays = Math.ceil((dObj - todayObj) / (1000 * 60 * 60 * 24));
+                        
+                        if (diffDays <= 0) { // Past or due today
+                            firmOverdue++;
+                            if (diffDays === 0) {
+                                firmToday++;
+                            }
+                            
+                            topPriorities.push({
+                                task_id: `subsidy:${sub.id}`,
+                                task_name: `${sub.subsidy_name} Follow-up`,
+                                clientName: clientObj.display_name,
+                                serviceName: 'Startup/Subsidy',
+                                diffDays: diffDays
+                            });
+                        }
+                    }
+                }
+            });
+        } catch (e) { console.error("Startup Dashboard Engine Error:", e); }
+
+        // --- 2. EXPLICIT TASKS ENGINE ---
+        try {
+            const { data: explicitTasks } = await supabaseClient.from('tasks').select('task_id, status, due_date, assigned_to, is_custom, custom_task_name, clients(display_name), services(service_type)');
+            if (explicitTasks) {
+                explicitTasks.forEach(t => {
+                    if (t.assigned_to === currentUser.id) {
+                        const isCompleted = t.status === 'Completed';
+                        const isWaitingOnClient = t.status.toLowerCase().includes('client') || t.status.toLowerCase().includes('hold');
+                        
+                        // PERFORMANCE CHECK
+                        if (!isWaitingOnClient) {
+                            validTotalTasks++;
+                            if (isCompleted) completedTasks++;
+                            
+                            if (!isCompleted) {
+                                pendingWorkIds.add(`task:${t.task_id}`);
+                                const taskName = t.is_custom ? t.custom_task_name : (t.services?.service_type || 'Task');
+                                window.globalDashboardPulsePendingDetails.push({
+                                    id: `task:${t.task_id}`,
+                                    clientName: t.clients ? t.clients.display_name : 'General Task',
+                                    serviceName: taskName,
+                                    pageName: 'Custom Tasks',
+                                    viewName: 'view-custom-tasks',
+                                    isOverdue: t.due_date ? (new Date(t.due_date.split('T')[0]) < new Date().setHours(0,0,0,0)) : false,
+                                    taskId: t.task_id,
+                                    type: 'task'
+                                });
+                            }
+                        }
+
+                        // TILE COUNTING & PRIORITIES
+                        if (!isCompleted) {
+                            if (t.services && t.services.service_type) {
+                                const stype = t.services.service_type.toLowerCase();
+                                if (stype.includes('gst')) myGstCount++;
+                                else if (stype.includes('tds')) myTdsCount++;
+                                else if (stype.includes('audit')) myAuditCount++;
+                                else myCompCount++;
+                            }
+                            else myCustomCount++;
+
+                            // PRIORITY LOGIC
+                            if (t.due_date) {
+                                const dObj = new Date(t.due_date.split('T')[0]);
+                                const todayObj = new Date(new Date().toISOString().split('T')[0]);
+                                const diffDays = Math.ceil((dObj - todayObj) / (1000 * 60 * 60 * 24));
+                                
+                                if (diffDays <= 0) {
+                                    const taskName = t.is_custom ? t.custom_task_name : (t.services?.service_type || 'Task');
+                                    topPriorities.push({
+                                        ...t,
+                                        task_name: taskName,
+                                        diffDays: diffDays,
+                                        clientName: t.clients ? t.clients.display_name : 'General Task',
+                                        serviceName: t.services ? t.services.service_type : 'Custom Task'
+                                    });
+                                }
+                            }
+                        }
+                    }
+
+                    if (t.status !== 'Completed' && t.due_date) {
+                        const isMine = t.assigned_to === currentUser.id || 
+                                       (!t.assigned_to && (myAssignments || []).some(a => a.client_id === t.client_id && a.service_type === t.services?.service_type && a.maker_id === currentUser.id));
+                        if (isMine) {
+                            const dObj = new Date(t.due_date.split('T')[0]);
+                            const todayObj = new Date(new Date().toISOString().split('T')[0]);
+                            const diffDays = Math.ceil((dObj - todayObj) / (1000 * 60 * 60 * 24));
+                            if (diffDays < 0) firmOverdue++;
+                            if (diffDays === 0) firmToday++;
+                        }
+                    }
+                });
+            }
+
+            // --- 2.5 USER-SPECIFIC AUDITS & SUBSIDIES ENGINE ---
+            const myMakerAssignments = (myAssignments || []).filter(a => a.maker_id === currentUser.id);
+            
+            // Audits overdue calculation
+            const myAuditClientIds = myMakerAssignments
+                .filter(a => 
+                    a.service_type === 'Audit Status' || 
+                    (a.service_type && a.service_type.toLowerCase().includes('audit')) ||
+                    (enrolledAuditServices.some(as => a.service_type && a.service_type.toLowerCase() === as.toLowerCase()))
+                )
+                .map(a => a.client_id);
+            
+            if (myAuditClientIds.length > 0) {
+                const { data: auditFollowupLogs } = await supabaseClient
+                    .from('task_logs')
+                    .select('client_id, note, timestamp')
+                    .in('client_id', myAuditClientIds)
+                    .ilike('note', '%[AUDIT_FOLLOWUP]%')
+                    .order('timestamp', { ascending: false });
+                    
+                const auditFollowupMap = {};
+                if (auditFollowupLogs) {
+                    auditFollowupLogs.forEach(log => {
+                        if (log.note && !auditFollowupMap[log.client_id]) {
+                            const match = log.note.match(/\[AUDIT_FOLLOWUP\] Date: (.*?)(?:\s*\||$)/);
+                            if (match) {
+                                auditFollowupMap[log.client_id] = match[1];
+                            }
+                        }
+                    });
+                }
+                
+                myAuditClientIds.forEach(clientId => {
+                    const clientObj = globalClientsList.find(c => c.client_id === clientId);
+                    if (clientObj && clientObj.is_active !== false && clientObj.audit_status !== 'Completed') {
+                        const followupDate = auditFollowupMap[clientId];
+                        if (followupDate) {
+                            const dObj = new Date(followupDate);
+                            const todayObj = new Date(new Date().toISOString().split('T')[0]);
+                            const diffDays = Math.ceil((dObj - todayObj) / (1000 * 60 * 60 * 24));
+                            if (diffDays < 0) firmOverdue++;
+                            if (diffDays === 0) firmToday++;
+                        }
+                    }
+                });
+            }
+
+            // Subsidies overdue calculation
+            const mySubsidyAssignments = myMakerAssignments.filter(a => 
+                a.service_type && (
+                    a.service_type.toLowerCase().includes('startup') || 
+                    a.service_type.toLowerCase().includes('subsidy')
+                )
+            );
+            const mySubsidyClientIds = mySubsidyAssignments.map(a => a.client_id);
+            
+            if (mySubsidyClientIds.length > 0) {
+                const { data: mySubsidiesData } = await supabaseClient
+                    .from('client_subsidies')
+                    .select('*')
+                    .in('client_id', mySubsidyClientIds);
+                    
+                if (mySubsidiesData) {
+                    mySubsidiesData.forEach(sub => {
+                        const isAssigned = mySubsidyAssignments.some(a => a.client_id === sub.client_id && a.service_type === sub.subsidy_name);
+                        if (isAssigned && sub.status !== 'Approved' && sub.status !== 'Filed' && sub.status !== 'Completed') {
+                            if (sub.next_followup_date) {
+                                const dObj = new Date(sub.next_followup_date);
+                                const todayObj = new Date(new Date().toISOString().split('T')[0]);
+                                const diffDays = Math.ceil((dObj - todayObj) / (1000 * 60 * 60 * 24));
+                                if (diffDays < 0) firmOverdue++;
+                                if (diffDays === 0) firmToday++;
+                            }
+                        }
+                    });
+                }
+            }
+
+            // Render Top Priorities
+            const priorityContainer = document.getElementById('dash-top-priorities');
+            if (priorityContainer) {
+                if (topPriorities.length > 0) {
+                    // Sort by urgency (most overdue first)
+                    topPriorities.sort((a, b) => a.diffDays - b.diffDays);
+                    
+                    let priorityHtml = '';
+                    topPriorities.slice(0, 5).forEach(p => {
+                        const dateLabel = p.diffDays < 0 ? `${Math.abs(p.diffDays)}d Overdue` : 'Due Today';
+                        const colorClass = p.diffDays < 0 ? 'bg-red-50 text-red-700 border-red-100' : 'bg-amber-50 text-amber-700 border-amber-100';
+                        
+                        priorityHtml += `
+                            <div class="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex items-center justify-between group hover:border-indigo-200 transition-all">
+                                <div class="flex-1 min-w-0">
+                                    <h5 class="text-xs font-black text-slate-800 truncate">${p.task_name}</h5>
+                                    <p class="text-[10px] text-slate-400 font-bold uppercase tracking-tighter truncate">${p.clientName} • ${p.serviceName}</p>
+                                </div>
+                                <span class="px-2.5 py-1 rounded-lg text-[9px] font-black uppercase tracking-wider border ${colorClass} ml-3 whitespace-nowrap">${dateLabel}</span>
+                            </div>
+                        `;
+                    });
+                    priorityContainer.innerHTML = priorityHtml;
+                } else {
+                    priorityContainer.innerHTML = `
+                        <div class="bg-white p-8 rounded-2xl border border-dashed border-slate-200 flex flex-col items-center justify-center text-center h-full">
+                            <div class="w-10 h-10 rounded-full bg-emerald-50 text-emerald-500 flex items-center justify-center mb-3"><i class="fa-solid fa-check"></i></div>
+                            <p class="text-xs font-bold text-slate-500 uppercase tracking-tight">You're all caught up!</p>
+                            <p class="text-[10px] text-slate-400 mt-1">No urgent deadlines pending.</p>
+                        </div>
+                    `;
+                }
+            }
+
+        } catch (e) { console.error("Tasks Engine Error:", e); }
+
+        // --- 3. TODAY's PULSE (Daily Rating) ---
+        let updatedCount = 0;
+        let totalCount = pendingWorkIds.size;
+        let todayGrade = "C";
+        let gradeColor = "text-amber-500";
+        try {
+            const todayStart = new Date();
+            todayStart.setHours(0,0,0,0);
+            const todayISO = todayStart.toISOString();
+
+            // Fetch Task Logs, Debtor Logs, and TDS Logs in parallel
+            const [taskLogsRes, debtorLogsRes, tdsLogsRes] = await Promise.all([
+                supabaseClient.from('task_logs').select('task_id, client_id, note, bank_status, sales_status, ledger_status, others_status').eq('user_id', currentUser.id).gte('timestamp', todayISO),
+                supabaseClient.from('follow_up_logs').select('ledger_id, notes').eq('user_id', currentUser.id).gte('timestamp', todayISO),
+                supabaseClient.from('task_history').select('client_id, note').eq('user_id', currentUser.id).gte('timestamp', todayISO).eq('task_type', 'TDS')
+            ]);
+
+            let updatedIds = new Set();
+
+            if (taskLogsRes.data) {
+                taskLogsRes.data.forEach(l => { 
+                    // 1. Task check
+                    if (l.task_id && pendingWorkIds.has(`task:${l.task_id}`)) {
+                        const key = `task:${l.task_id}`;
+                        if (!updatedIds.has(key)) {
+                            updatedIds.add(key);
+                            const detail = window.globalDashboardPulsePendingDetails.find(item => item.id === key);
+                            if (detail) {
+                                window.globalDashboardPulseUpdatedDetails.push({
+                                    ...detail,
+                                    logNote: l.note
+                                });
+                            }
+                        }
+                    }
+
+                    // 2. GST check — any activity today on this client counts as acknowledged
+                    const gstKey = `gst:${l.client_id}`;
+                    if (pendingWorkIds.has(gstKey) && !updatedIds.has(gstKey)) {
+                        updatedIds.add(gstKey);
+                        const detail = window.globalDashboardPulsePendingDetails.find(item => item.id === gstKey);
+                        if (detail) {
+                            window.globalDashboardPulseUpdatedDetails.push({
+                                ...detail,
+                                logNote: l.note
+                            });
+                        }
+                    }
+
+                    // 3. Audit check
+                    if (l.note && (l.bank_status !== null || l.sales_status !== null || l.ledger_status !== null || l.others_status !== null || l.note.includes('[AUDIT_FOLLOWUP]') || l.note.includes('Audit status') || l.note.includes('[Acknowledged Today]'))) {
+                        const key = `audit:${l.client_id}`;
+                        if (pendingWorkIds.has(key) && !updatedIds.has(key)) {
+                            updatedIds.add(key);
+                            const detail = window.globalDashboardPulsePendingDetails.find(item => item.id === key);
+                            if (detail) {
+                                window.globalDashboardPulseUpdatedDetails.push({
+                                    ...detail,
+                                    logNote: l.note
+                                });
+                            }
+                        }
+                    }
+
+                    // 4. Subsidy checklist updates (CAT:)
+                    if (l.note && l.note.includes('|')) {
+                        const parts = l.note.split('|');
+                        const catPart = parts.find(p => p.includes('CAT:'));
+                        if (catPart) {
+                            const cat = catPart.split('CAT:')[1].trim();
+                            const key = `subsidy:${l.client_id}:${cat}`;
+                            if (pendingWorkIds.has(key) && !updatedIds.has(key)) {
+                                updatedIds.add(key);
+                                const detail = window.globalDashboardPulsePendingDetails.find(item => item.id === key);
+                                if (detail) {
+                                    window.globalDashboardPulseUpdatedDetails.push({
+                                        ...detail,
+                                        logNote: l.note
+                                    });
+                                }
+                            }
+                        }
+                    }
+
+                    // 5. Subsidy general case updates
+                    if (l.note && l.note.includes('[StartupSubsidyUpdate::')) {
+                        const cat = l.note.split('[StartupSubsidyUpdate::')[1].split(']')[0];
+                        const key = `subsidy:${l.client_id}:${cat}`;
+                        if (pendingWorkIds.has(key) && !updatedIds.has(key)) {
+                            updatedIds.add(key);
+                            const detail = window.globalDashboardPulsePendingDetails.find(item => item.id === key);
+                            if (detail) {
+                                window.globalDashboardPulseUpdatedDetails.push({
+                                    ...detail,
+                                    logNote: l.note
+                                });
+                            }
+                        }
+                    }
+
+                    // 6. Subsidy case acknowledgements
+                    if (l.note && l.note.includes('[Acknowledged Today]') && l.note.includes('Subsidy type:')) {
+                        const match = l.note.match(/Subsidy type: (.*?) acknowledged/);
+                        if (match) {
+                            const subsidyType = match[1];
+                            const key = `subsidy:${l.client_id}:${subsidyType}`;
+                            if (pendingWorkIds.has(key) && !updatedIds.has(key)) {
+                                updatedIds.add(key);
+                                const detail = window.globalDashboardPulsePendingDetails.find(item => item.id === key);
+                                if (detail) {
+                                    window.globalDashboardPulseUpdatedDetails.push({
+                                        ...detail,
+                                        logNote: l.note
+                                    });
+                                }
+                            }
+                        }
+                    }
+
+                    // 7. Generic Compliances check
+                    if (l.note && l.note.includes('[Acknowledged Today]')) {
+                        window.globalDashboardPulsePendingDetails.forEach(detail => {
+                            if (detail.type === 'comp' && detail.clientId === l.client_id && l.note.includes(detail.serviceName)) {
+                                const key = detail.id;
+                                if (pendingWorkIds.has(key) && !updatedIds.has(key)) {
+                                    updatedIds.add(key);
+                                    window.globalDashboardPulseUpdatedDetails.push({
+                                        ...detail,
+                                        logNote: l.note
+                                    });
+                                }
+                             }
+                        });
+                    }
+                });
+            }
+
+            // TDS check
+            if (tdsLogsRes.data) {
+                tdsLogsRes.data.forEach(log => {
+                    const key = `tds:${log.client_id}`;
+                    if (pendingWorkIds.has(key) && !updatedIds.has(key)) {
+                        updatedIds.add(key);
+                        const detail = window.globalDashboardPulsePendingDetails.find(item => item.id === key);
+                        if (detail) {
+                            window.globalDashboardPulseUpdatedDetails.push({
+                                ...detail,
+                                logNote: log.note
+                            });
+                        }
+                    }
+                });
+            }
+
+            // Debtor check
+            if (debtorLogsRes.data) {
+                debtorLogsRes.data.forEach(l => { 
+                    if (pendingWorkIds.has(`debtor:${l.ledger_id}`)) {
+                        const key = `debtor:${l.ledger_id}`;
+                        if (!updatedIds.has(key)) {
+                            updatedIds.add(key);
+                            const detail = window.globalDashboardPulsePendingDetails.find(item => item.id === key);
+                            if (detail) {
+                                window.globalDashboardPulseUpdatedDetails.push({
+                                    ...detail,
+                                    logNote: l.notes || 'Debtor collection follow-up log submitted.'
+                                });
+                            }
+                        }
+                    }
+                });
+            }
+
+            updatedCount = updatedIds.size;
+
+
+            // Calculate Grade based on percentage or raw coverage
+            const coverage = totalCount > 0 ? (updatedCount / totalCount) * 100 : 100;
+            if (coverage >= 80) { todayGrade = "A+"; gradeColor = "text-emerald-500"; }
+            else if (coverage >= 50) { todayGrade = "A"; gradeColor = "text-emerald-500"; }
+            else if (updatedCount >= 1) { todayGrade = "B"; gradeColor = "text-blue-500"; }
+            else { todayGrade = "Z"; gradeColor = "text-slate-300"; }
+
+            window.globalDashboardPulseStats = {
+                totalCount: totalCount,
+                updatedCount: updatedCount,
+                coverage: Math.round(coverage),
+                grade: todayGrade
+            };
+        } catch (e) { console.error("Pulse Engine Error:", e); }
+
+        // Update UI Text
+        document.getElementById('tile-gst-count').innerText = myGstCount;
+        if(document.getElementById('tile-tds-count')) document.getElementById('tile-tds-count').innerText = myTdsCount;
+        document.getElementById('tile-audit-count').innerText = myAuditCount;
+        document.getElementById('tile-comp-count').innerText = myCompCount;
+        document.getElementById('tile-custom-count').innerText = myCustomCount;
+        if(document.getElementById('tile-startup-count')) document.getElementById('tile-startup-count').innerText = myStartupCount;
+        document.getElementById('tile-debtor-count').innerText = myDebtorCount; 
+        document.getElementById('dash-firm-overdue').innerText = firmOverdue;
+        document.getElementById('dash-firm-today').innerText = firmToday;
+        
+        // Update Pulse UI
+        document.getElementById('dash-today-updates').innerText = `${updatedCount}/${totalCount}`;
+        const gradeEl = document.getElementById('dash-today-grade');
+        gradeEl.innerText = todayGrade;
+        gradeEl.className = `text-4xl font-black ${gradeColor} transition-colors`;
+
+
+        // Calculate & Animate Overall %
+        let overallPercent = 0;
+        if (validTotalTasks > 0) overallPercent = Math.round((completedTasks / validTotalTasks) * 100);
+        
+        document.getElementById('dash-my-completed').innerText = completedTasks;
+        document.getElementById('dash-my-total').innerText = validTotalTasks;
+        document.getElementById('dash-my-percent').innerText = `${overallPercent}%`;
+        
+        const circle = document.getElementById('dash-progress-circle');
+        // 251.2 is the circumference of r=40
+        if (circle) circle.style.strokeDashoffset = 251.2 - (251.2 * overallPercent) / 100;
+
+        const pulseModal = document.getElementById('pulseExplanationModal');
+        if (pulseModal && !pulseModal.classList.contains('hidden')) {
+            openPulseExplanationModal();
+        }
+
+    } // <-- End of loadDashboardData() function
+
+    window.openPulseExplanationModal = function() {
+        const modal = document.getElementById('pulseExplanationModal');
+        if (!modal) return;
+
+        const stats = window.globalDashboardPulseStats || { totalCount: 0, updatedCount: 0, coverage: 0, grade: 'Z' };
+        const pending = window.globalDashboardPulsePendingDetails || [];
+        const updated = window.globalDashboardPulseUpdatedDetails || [];
+
+        document.getElementById('pulse-modal-total').innerText = stats.totalCount;
+        document.getElementById('pulse-modal-updated').innerText = stats.updatedCount;
+        document.getElementById('pulse-modal-coverage').innerText = `${stats.coverage}%`;
+        document.getElementById('pulse-modal-grade').innerText = stats.grade;
+        document.getElementById('pulse-modal-pending-cnt').innerText = pending.length;
+        document.getElementById('pulse-modal-updated-cnt').innerText = updated.length;
+
+        // Render Pending List
+        const pendingContainer = document.getElementById('pulse-modal-pending-list');
+        pendingContainer.innerHTML = '';
+        if (pending.length === 0) {
+            pendingContainer.innerHTML = `<p class="text-xs text-gray-400 text-center py-4">No pending assignments! You're fully caught up.</p>`;
+        } else {
+            pending.forEach(item => {
+                let ackBtnHtml = '';
+                const isAlreadyUpdated = updated.some(upd => upd.id === item.id);
+                if (isAlreadyUpdated) {
+                    ackBtnHtml = `<span class="bg-emerald-50 text-emerald-700 font-black px-2 py-1 rounded-md text-[9px] uppercase tracking-wider inline-flex items-center gap-0.5 border border-emerald-100"><i class="fa-solid fa-square-check"></i> Checked</span>`;
+                } else if (!item.isOverdue) {
+                    if (item.type === 'task') {
+                        ackBtnHtml = `<button onclick="acknowledgeTaskToday('${item.taskId}', event)" class="bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white px-2 py-1 rounded text-[9px] font-bold uppercase tracking-wider transition whitespace-nowrap">Acknowledge</button>`;
+                    } else if (item.type === 'gst') {
+                        ackBtnHtml = `<button onclick="acknowledgeGstToday('${item.clientId}', '${item.period}', event)" class="bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white px-2 py-1 rounded text-[9px] font-bold uppercase tracking-wider transition whitespace-nowrap">Acknowledge</button>`;
+                    } else if (item.type === 'tds') {
+                        ackBtnHtml = `<button onclick="acknowledgeTdsToday('${item.clientId}', '${item.period}', event)" class="bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white px-2 py-1 rounded text-[9px] font-bold uppercase tracking-wider transition whitespace-nowrap">Acknowledge</button>`;
+                    } else if (item.type === 'audit') {
+                        ackBtnHtml = `<button onclick="acknowledgeAuditToday('${item.clientId}', event)" class="bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white px-2 py-1 rounded text-[9px] font-bold uppercase tracking-wider transition whitespace-nowrap">Acknowledge</button>`;
+                    } else if (item.type === 'debtor') {
+                        ackBtnHtml = `<button onclick="acknowledgeDebtorToday('${item.ledgerId}', event)" class="bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white px-2 py-1 rounded text-[9px] font-bold uppercase tracking-wider transition whitespace-nowrap">Acknowledge</button>`;
+                    } else if (item.type === 'subsidy') {
+                        ackBtnHtml = `<button onclick="acknowledgeSubsidyToday('${item.clientId}', '${item.subsidyType}', event)" class="bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white px-2 py-1 rounded text-[9px] font-bold uppercase tracking-wider transition whitespace-nowrap">Acknowledge</button>`;
+                    }
+                }
+
+                pendingContainer.innerHTML += `
+                    <div class="flex items-center justify-between p-2.5 rounded-lg border border-slate-100 hover:border-indigo-100 transition-all text-xs">
+                        <div class="min-w-0 flex-1">
+                            <span class="font-black text-slate-800 truncate block">${item.clientName}</span>
+                            <span class="text-[10px] text-slate-400 font-bold uppercase tracking-wider block mt-0.5">${item.serviceName}${item.isOverdue ? ' <span class="text-red-500 font-black scale-90 inline-block bg-red-50 px-1 py-0.2 rounded border border-red-100">Overdue</span>' : ''}</span>
+                        </div>
+                        <div class="flex items-center gap-2 ml-3">
+                            ${ackBtnHtml}
+                            <button onclick="closePulseExplanationModal(); switchView('${item.viewName}')" class="bg-slate-100 text-slate-600 hover:bg-slate-600 hover:text-white px-2.5 py-1 rounded text-[9px] font-black uppercase tracking-wider transition whitespace-nowrap">Go to ${item.pageName}</button>
+                        </div>
+                    </div>
+                `;
+            });
+        }
+
+        // Render Updated List
+        const updatedContainer = document.getElementById('pulse-modal-updated-list');
+        updatedContainer.innerHTML = '';
+        if (updated.length === 0) {
+            updatedContainer.innerHTML = `<p class="text-xs text-gray-400 text-center py-4">No updates logged today yet. Keep going!</p>`;
+        } else {
+            updated.forEach(item => {
+                updatedContainer.innerHTML += `
+                    <div class="p-3 rounded-lg border border-emerald-100 bg-emerald-50/10 text-xs">
+                        <div class="flex items-center justify-between">
+                            <div class="min-w-0 flex-1">
+                                <span class="font-black text-slate-800 truncate block">${item.clientName}</span>
+                                <span class="text-[10px] text-slate-400 font-bold uppercase tracking-wider block mt-0.5">${item.serviceName} • Updated</span>
+                            </div>
+                            <span class="bg-emerald-100 text-emerald-700 font-black px-2 py-0.5 rounded-md text-[9px] uppercase tracking-wider ml-3 whitespace-nowrap">Logged</span>
+                        </div>
+                        <p class="text-[11px] text-gray-500 italic mt-2 border-t border-emerald-50/30 pt-1.5 leading-snug">${item.logNote || 'No remark recorded.'}</p>
+                    </div>
+                `;
+            });
+        }
+
+        modal.classList.remove('hidden');
+    }
+
+    window.closePulseExplanationModal = function() {
+        const modal = document.getElementById('pulseExplanationModal');
+        if (modal) modal.classList.add('hidden');
+    }
+
+    // ==========================================
+    // SYSTEM & CLIENT PENDENCIES TAB LOGIC
+    // ==========================================
+    window.globalNoServicesClientsList = [];
+    window.globalUnlinkedTallyClientsList = [];
+
+    window.loadPendencyCounts = async function() {
+        try {
+            // Get all active clients
+            const { data: clients, error: cliErr } = await supabaseClient
+                .from('clients')
+                .select('client_id, display_name, entity_type, standard_services')
+                .eq('is_active', true);
+            if (cliErr) throw cliErr;
+
+            // 1. Count clients without enrolled services
+            const noServicesClients = (clients || []).filter(c => {
+                return !c.standard_services || c.standard_services.trim() === '';
+            });
+            window.globalNoServicesClientsList = noServicesClients;
+            const noServicesCountEl = document.getElementById('pendencyNoServicesCount');
+            if (noServicesCountEl) noServicesCountEl.innerText = noServicesClients.length;
+
+            // 2. Count clients not linked to Tally ledger
+            const { data: mappings, error: mapErr } = await supabaseClient
+                .from('client_ledger_mapping')
+                .select('client_id');
+            if (mapErr) throw mapErr;
+
+            const mappedClientIds = new Set((mappings || []).map(m => m.client_id));
+            const unlinkedTallyClients = (clients || []).filter(c => !mappedClientIds.has(c.client_id));
+            window.globalUnlinkedTallyClientsList = unlinkedTallyClients;
+            const unlinkedTallyCountEl = document.getElementById('pendencyUnlinkedTallyCount');
+            if (unlinkedTallyCountEl) unlinkedTallyCountEl.innerText = unlinkedTallyClients.length;
+
+        } catch (e) {
+            console.error("Error in loadPendencyCounts:", e);
+        }
+    };
+
+    window.showClientsNoServicesPopup = function() {
+        const clients = window.globalNoServicesClientsList || [];
+        const titleEl = document.getElementById('pendencyModalTitle');
+        if (titleEl) titleEl.innerText = 'Clients Without Enrolled Services';
+        
+        const tbody = document.getElementById('pendencyModalTableBody');
+        if (!tbody) return;
+        
+        tbody.innerHTML = '';
+        if (clients.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" class="text-center py-6 text-slate-400">All clients have enrolled services!</td></tr>';
+        } else {
+            clients.forEach((c, index) => {
+                tbody.innerHTML += `
+                    <tr class="hover:bg-slate-50 transition border-b border-slate-100">
+                        <td class="px-6 py-4 text-center font-mono text-slate-400">${index + 1}</td>
+                        <td class="px-6 py-4 font-bold text-slate-800">${c.display_name}</td>
+                        <td class="px-6 py-4 font-semibold text-slate-500 uppercase tracking-wider text-[10px]">${c.entity_type || '-'}</td>
+                        <td class="px-6 py-4 text-right">
+                            <button onclick="closePendencyListModal(); openUniversalClientProfile('${c.client_id}')" class="text-xs font-black text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-3.5 py-2 rounded-xl transition-all uppercase tracking-widest"><i class="fa-solid fa-user-plus mr-1"></i> Enroll</button>
+                        </td>
+                    </tr>
+                `;
+            });
+        }
+        document.getElementById('pendencyListModal').classList.remove('hidden');
+    };
+
+    window.showClientsUnlinkedTallyPopup = function() {
+        const clients = window.globalUnlinkedTallyClientsList || [];
+        const titleEl = document.getElementById('pendencyModalTitle');
+        if (titleEl) titleEl.innerText = 'Clients Not Linked to Tally';
+        
+        const tbody = document.getElementById('pendencyModalTableBody');
+        if (!tbody) return;
+
+        tbody.innerHTML = '';
+        if (clients.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" class="text-center py-6 text-slate-400">All clients are linked to Tally!</td></tr>';
+        } else {
+            clients.forEach((c, index) => {
+                tbody.innerHTML += `
+                    <tr class="hover:bg-slate-50 transition border-b border-slate-100">
+                        <td class="px-6 py-4 text-center font-mono text-slate-400">${index + 1}</td>
+                        <td class="px-6 py-4 font-bold text-slate-800">${c.display_name}</td>
+                        <td class="px-6 py-4 font-semibold text-slate-500 uppercase tracking-wider text-[10px]">${c.entity_type || '-'}</td>
+                        <td class="px-6 py-4 text-right">
+                            <button onclick="closePendencyListModal(); openUniversalClientProfile('${c.client_id}')" class="text-xs font-black text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-3.5 py-2 rounded-xl transition-all uppercase tracking-widest"><i class="fa-solid fa-link mr-1"></i> Link Ledger</button>
+                        </td>
+                    </tr>
+                `;
+            });
+        }
+        document.getElementById('pendencyListModal').classList.remove('hidden');
+    };
+
+    window.closePendencyListModal = function() {
+        const modal = document.getElementById('pendencyListModal');
+        if (modal) modal.classList.add('hidden');
+    };
+</script>

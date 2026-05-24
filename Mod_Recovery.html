@@ -1,0 +1,163 @@
+<div id="view-debtors" class="hidden px-4 py-4 md:px-6 md:py-6 bg-slate-50/50 overflow-y-auto w-full h-full os-scroll">
+    <!-- Header Section -->
+    <div class="flex flex-col lg:flex-row justify-between items-start lg:items-center mb-10 gap-6">
+        <div class="flex items-center gap-5">
+            <div class="h-16 w-16 rounded-2xl bg-gradient-to-br from-indigo-600 to-violet-700 flex items-center justify-center text-white shadow-xl shadow-indigo-200">
+                <i class="fa-solid fa-chart-line text-2xl"></i>
+            </div>
+            <div>
+                <h2 class="text-2xl font-black text-slate-900 tracking-tight">Recovery OS</h2>
+                <div class="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-6 mt-2">
+                    <p class="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                        <span class="flex h-2 w-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                        Portfolio Management & Sync
+                    </p>
+                </div>
+            </div>
+        </div>
+        <div class="flex flex-wrap items-center gap-3 w-full lg:w-auto">
+            <button onclick="globalRefresh()" class="bg-white border border-slate-200 text-slate-600 p-3 rounded-xl shadow-sm hover:text-indigo-600 hover:border-indigo-600 hover:shadow-md transition-all active:scale-95 group self-start">
+                <i class="fa-solid fa-arrows-rotate group-hover:rotate-180 transition-transform duration-500"></i>
+            </button>
+            <div class="flex flex-col gap-1.5 items-end">
+                <input type="file" id="tallyJsonInput" accept=".json, .txt" class="hidden" onchange="processTallyFile(event)">
+                <button onclick="triggerJsonUpload()" id="uploadTallyBtn" class="bg-slate-900 text-white px-5 py-3 rounded-xl font-black hover:bg-black transition-all shadow-lg shadow-slate-100 flex items-center gap-2.5 active:scale-95 text-xs">
+                    <i class="fa-solid fa-cloud-arrow-up text-sm"></i>
+                    Sync Tally Data
+                </button>
+                <p class="text-[9px] font-black text-indigo-500 uppercase tracking-wider mt-0.5" id="last-sync-text">Checking sync...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Mapping Alert Section -->
+    <div id="mapping-section" class="bg-amber-50 rounded-3xl shadow-sm border border-amber-200 overflow-hidden mb-10 hidden animate-bounce-subtle">
+        <div class="bg-amber-100/50 px-8 py-5 border-b border-amber-200 flex justify-between items-center">
+            <h3 class="text-lg font-black text-amber-900 flex items-center gap-3">
+                <i class="fa-solid fa-triangle-exclamation text-amber-600"></i>
+                Unmapped Ledgers Detected (<span id="mapping-count">0</span>)
+            </h3>
+            <p class="text-xs font-bold text-amber-700 uppercase tracking-wider">Mapping required for accurate sync</p>
+        </div>
+        <div class="p-2"><table class="min-w-full text-left text-sm"><tbody id="mapping-table-body" class="divide-y divide-amber-100"></tbody></table></div>
+    </div>
+
+    <!-- Performance Cards Grid -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
+        <!-- Outstanding Card -->
+        <div class="relative overflow-hidden bg-white p-5 rounded-3xl shadow-sm border border-slate-100 group hover:shadow-2xl hover:shadow-indigo-100 transition-all duration-500 min-h-[145px] flex justify-between">
+            <div class="absolute -right-4 -top-4 w-20 h-20 bg-red-50/50 rounded-full opacity-50 group-hover:scale-150 transition-transform duration-700"></div>
+            <!-- Left Side: Icon & Value -->
+            <div class="flex flex-col justify-between h-full relative z-10">
+                <div class="h-10 w-10 rounded-xl bg-red-50 text-red-500 flex items-center justify-center text-lg shadow-inner mb-4">
+                    <i class="fa-solid fa-wallet"></i>
+                </div>
+                <div>
+                    <p class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Outstanding</p>
+                    <h3 class="text-2xl font-black text-slate-800 tracking-tight" id="rec-total-out">₹0</h3>
+                </div>
+            </div>
+            <!-- Right Side: Status & Footer -->
+            <div class="flex flex-col justify-between items-end h-full relative z-10 text-right">
+                <span class="text-[9px] font-black text-red-600 bg-red-50 px-2.5 py-1 rounded-full uppercase tracking-wider">Risk Level High</span>
+                <div class="flex items-center gap-1 text-[10px] font-bold text-slate-400 mt-auto">
+                    <i class="fa-solid fa-circle-info"></i>
+                    Updated from last sync
+                </div>
+            </div>
+        </div>
+
+        <!-- Recovered Card -->
+        <div class="relative overflow-hidden bg-white p-5 rounded-3xl shadow-sm border border-slate-100 group hover:shadow-2xl hover:shadow-emerald-100 transition-all duration-500 min-h-[145px] flex justify-between">
+            <div class="absolute -right-4 -top-4 w-20 h-20 bg-emerald-50/50 rounded-full opacity-50 group-hover:scale-150 transition-transform duration-700"></div>
+            <!-- Left Side: Icon & Value -->
+            <div class="flex flex-col justify-between h-full relative z-10">
+                <div class="h-10 w-10 rounded-xl bg-emerald-50 text-emerald-500 flex items-center justify-center text-lg shadow-inner mb-4">
+                    <i class="fa-solid fa-arrow-trend-up"></i>
+                </div>
+                <div>
+                    <p class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Recovered This Month</p>
+                    <h3 class="text-2xl font-black text-emerald-600 tracking-tight" id="rec-this-month">₹0</h3>
+                </div>
+            </div>
+            <!-- Right Side: Status & Footer -->
+            <div class="flex flex-col justify-between items-end h-full relative z-10 text-right">
+                <span class="text-[9px] font-black text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full uppercase tracking-wider">Growth Focus</span>
+                <div class="flex items-center gap-1 text-[10px] font-bold text-emerald-500 mt-auto">
+                    <i class="fa-solid fa-chart-simple"></i>
+                    +12% vs last month
+                </div>
+            </div>
+        </div>
+
+        <!-- Performance Grade Card -->
+        <div class="relative overflow-hidden bg-white p-5 rounded-3xl shadow-sm border border-slate-100 group hover:shadow-2xl hover:shadow-indigo-100 transition-all duration-500 min-h-[145px] flex justify-between">
+            <div class="absolute -right-4 -top-4 w-20 h-20 bg-indigo-50/50 rounded-full opacity-50 group-hover:scale-150 transition-transform duration-700"></div>
+            <!-- Left Side: Icon & Value -->
+            <div class="flex flex-col justify-between h-full relative z-10">
+                <div class="h-10 w-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-lg shadow-inner mb-4">
+                    <i class="fa-solid fa-star-half-stroke"></i>
+                </div>
+                <div>
+                    <p class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Master Score</p>
+                    <div class="flex items-center gap-2">
+                        <span class="text-3xl font-black text-indigo-600" id="rec-grade">-</span>
+                        <span class="text-2xl animate-bounce-subtle" id="rec-emoji">📊</span>
+                    </div>
+                </div>
+            </div>
+            <!-- Right Side: Status & Footer -->
+            <div class="flex flex-col justify-between items-end h-full relative z-10 text-right max-w-[60%]">
+                <span class="text-[9px] font-black text-indigo-600 bg-indigo-50 px-2.5 py-1 rounded-full uppercase tracking-wider">Velocity Grade</span>
+                <p class="text-[11px] font-bold text-indigo-600 leading-snug mt-auto" id="rec-msg">Analyzing recovery velocity...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Active List Section -->
+    <div class="bg-white rounded-[3rem] shadow-sm border border-slate-200 mb-12 transition-all">
+        <div class="p-6 md:p-8 border-b border-slate-100 flex flex-col lg:flex-row justify-between items-center bg-white gap-6 rounded-t-[3rem]">
+            <div class="flex items-center gap-4">
+                <div class="h-10 w-1 bg-indigo-600 rounded-full"></div>
+                <h3 class="font-black text-slate-800 text-xl tracking-tight flex items-center gap-3">
+                    Active Debtors
+                    <span class="px-2.5 py-0.5 rounded-full bg-slate-100 text-[10px] font-black text-slate-500">LIVE</span>
+                </h3>
+            </div>
+            
+            <div class="flex flex-col sm:flex-row items-center gap-4 w-full lg:w-auto">
+                <div class="relative w-full sm:w-48">
+                    <select id="debtorAssignFilter" onchange="filterDebtors()" class="w-full pl-5 pr-10 py-3.5 border border-slate-200 rounded-[1.25rem] outline-none focus:ring-4 focus:ring-indigo-50 shadow-sm font-black text-xs text-slate-700 transition appearance-none cursor-pointer bg-slate-50/50">
+                        <option value="mine" selected>My cases (assigned to me)</option>
+                        <option value="all">All cases (all)</option>
+                    </select>
+                    <i class="fa-solid fa-chevron-down absolute right-4 top-4 text-slate-400 text-[10px] pointer-events-none"></i>
+                </div>
+
+                <div class="relative w-full sm:w-96">
+                    <i class="fa-solid fa-magnifying-glass absolute left-5 top-1/2 -translate-y-1/2 text-slate-400"></i>
+                    <input type="text" id="debtorSearch" onkeyup="filterDebtors()" placeholder="Search ledger or client..." class="w-full pl-12 pr-6 py-3.5 border border-slate-200 rounded-[1.25rem] outline-none focus:ring-4 focus:ring-indigo-50 shadow-sm transition text-sm font-bold bg-slate-50/50">
+                </div>
+            </div>
+        </div>
+        <div>
+            <table class="min-w-full text-left border-collapse">
+                <thead class="sticky top-0 z-10 bg-slate-50 text-xs font-black text-slate-400 uppercase tracking-[0.2em] border-b border-slate-100">
+                    <tr>
+                        <th class="px-8 py-6 w-[32%] sticky top-0 bg-slate-50 z-10">Ledger Name</th>
+                        <th class="px-8 py-6 w-[20%] sticky top-0 bg-slate-50 z-10">Balance</th>
+                        <th class="px-8 py-6 w-[15%] sticky top-0 bg-slate-50 z-10">Follow-up Date</th>
+                        <th class="px-8 py-6 w-[23%] sticky top-0 bg-slate-50 z-10">Status</th>
+                        <th class="px-8 py-6 w-[10%] text-right sticky top-0 bg-slate-50 z-10">Action</th>
+                    </tr>
+                </thead>
+                <tbody id="debtor-list" class="divide-y divide-slate-50 text-sm">
+                    <!-- Debtors will be rendered here -->
+                </tbody>
+            </table>
+        </div>
+        <div class="p-8 bg-slate-50/30 border-t border-slate-50 flex justify-center rounded-b-[3rem]">
+            <p class="text-[10px] font-black text-slate-300 uppercase tracking-widest">End of Active Portfolio</p>
+        </div>
+    </div>
+</div>

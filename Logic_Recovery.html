@@ -1,0 +1,780 @@
+<script>
+    // --- RECOVERY OS & MAPPING LOGIC ---
+
+    function triggerJsonUpload() {
+        document.getElementById('tallyJsonInput').click();
+    }
+
+    async function loadDebtorsData() {
+        const tbody = document.getElementById('debtor-list');
+        if (!tbody) return;
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center p-8 text-gray-500"><i class="fa-solid fa-spinner fa-spin text-2xl mb-2"></i><br>Loading Debtors...</td></tr>';
+        
+        try {
+            const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+            
+            const [resLedgers, resPayments, resLogs] = await Promise.all([
+                supabaseClient.from('tally_ledgers').select('*').gt('current_balance', 0),
+                supabaseClient.from('payments').select('amount').gte('payment_date', startOfMonth),
+                supabaseClient.from('follow_up_logs').select('timestamp, ledger_id, user_id, users(name)').order('timestamp', { ascending: false })
+            ]);
+            
+            let ledgers = resLedgers.data || [];
+            const recentPayments = resPayments.data || [];
+            const recentLogs = resLogs.data || [];
+
+            if (ledgers.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="text-center p-8 text-gray-500">No active debtors found. Upload Tally JSON to sync.</td></tr>';
+                
+                let recThisMonth = 0;
+                if (recentPayments) recentPayments.forEach(p => recThisMonth += parseFloat(p.amount) || 0);
+                
+                document.getElementById('rec-total-out').innerText = '₹0';
+                document.getElementById('rec-this-month').innerText = `₹${recThisMonth.toLocaleString('en-IN')}`;
+                
+                if(recThisMonth > 0) {
+                    document.getElementById('rec-grade').innerText = 'A';
+                    document.getElementById('rec-emoji').innerText = '🤩';
+                    document.getElementById('rec-msg').innerText = "100% Recovered! Outstanding is clear.";
+                } else {
+                    document.getElementById('rec-grade').innerText = '-';
+                    document.getElementById('rec-emoji').innerText = '📊';
+                    document.getElementById('rec-msg').innerText = "No active debts.";
+                }
+                return;
+            }
+
+            const today = new Date(); 
+            today.setHours(0,0,0,0);
+            
+            ledgers.sort((a, b) => {
+                function getSortProps(ledger) {
+                    if (!ledger.next_followup) return { cat: 2, days: 0, ts: 0 }; 
+                    const dDate = new Date(ledger.next_followup); 
+                    if(isNaN(dDate.getTime())) return { cat: 2, days: 0, ts: 0 };
+                    dDate.setHours(0,0,0,0);
+                    const diffDays = Math.ceil((today - dDate) / (1000 * 60 * 60 * 24));
+                    if (diffDays > 0) return { cat: 1, days: diffDays, ts: 0 };
+                    return { cat: 3, days: 0, ts: dDate.getTime() }; 
+                }
+                const pA = getSortProps(a);
+                const pB = getSortProps(b);
+                if (pA.cat !== pB.cat) return pA.cat - pB.cat;
+                if (pA.cat === 1) return pB.days - pA.days; 
+                if (pA.cat === 3) return pA.ts - pB.ts; 
+                return (parseFloat(b.current_balance) || 0) - (parseFloat(a.current_balance) || 0); 
+            });
+            
+            globalDebtorsList = ledgers;
+
+            let totalOut = 0;
+            let recThisMonth = 0;
+            globalContactMap = {};
+            
+            if(recentLogs) {
+                recentLogs.forEach(log => {
+                    if(!globalContactMap[log.ledger_id] || new Date(log.timestamp) > new Date(globalContactMap[log.ledger_id].time)) {
+                        globalContactMap[log.ledger_id] = { 
+                            time: log.timestamp, 
+                            user: log.users?.name || 'System',
+                            user_id: log.user_id
+                        };
+                    }
+                });
+            }
+
+            if(recentPayments) recentPayments.forEach(p => recThisMonth += parseFloat(p.amount) || 0);
+            ledgers.forEach(l => totalOut += parseFloat(l.current_balance) || 0);
+
+            document.getElementById('rec-total-out').innerText = `₹${totalOut.toLocaleString('en-IN')}`;
+            document.getElementById('rec-this-month').innerText = `₹${recThisMonth.toLocaleString('en-IN')}`;
+            
+            let grade = 'D';
+            let emoji = '⚠️'; let msg = "Warning: Focus on debt recovery.";
+            const totalBase = totalOut + recThisMonth;
+            const recPercent = totalBase > 0 ? (recThisMonth / totalBase) * 100 : 0;
+            
+            if(recPercent >= 20) { grade = 'A'; emoji = '🤩'; msg = "Excellent work! Stellar recovery."; }
+            else if (recPercent >= 10) { grade = 'B'; emoji = '🙂'; msg = "Great job! You are on the right track."; }
+            else if (recPercent >= 5) { grade = 'C'; emoji = '🧐'; msg = "Good going, a little more push needed."; }
+            
+            document.getElementById('rec-grade').innerText = grade;
+            document.getElementById('rec-emoji').innerText = emoji;
+            document.getElementById('rec-msg').innerText = msg;
+            
+            let lastSyncDisplay = "No sync history";
+            const dates = ledgers.map(l => l.last_sync_date).filter(d => d);
+            
+            if(dates.length > 0) {
+                const maxTime = Math.max(...dates.map(e => new Date(e).getTime()));
+                const maxDate = new Date(maxTime);
+                let syncerName = "Unknown";
+                const latestLedger = ledgers.find(l => l.last_sync_date && new Date(l.last_sync_date).getTime() === maxTime);
+                if(latestLedger && latestLedger.last_sync_by) syncerName = latestLedger.last_sync_by;
+                lastSyncDisplay = `Last sync by ${syncerName} on ${maxDate.toLocaleDateString('en-IN')} at ${maxDate.toLocaleTimeString('en-IN', {hour: '2-digit', minute:'2-digit'})}`;
+            }
+            document.getElementById('last-sync-text').innerText = lastSyncDisplay;
+
+            let dl = document.getElementById('global-client-datalist');
+            if (!dl) { dl = document.createElement('datalist'); dl.id = 'global-client-datalist'; document.body.appendChild(dl); }
+            dl.innerHTML = '';
+            if (typeof globalClientsList !== 'undefined') {
+                globalClientsList.forEach(c => dl.innerHTML += `<option value="${c.display_name}"></option>`);
+            }
+
+            // Fetch today's debtor acknowledgement logs
+            const todayStartD = new Date();
+            todayStartD.setHours(0, 0, 0, 0);
+            const { data: debtorAckLogs } = await supabaseClient
+                .from('follow_up_logs')
+                .select('ledger_id')
+                .eq('user_id', currentUser.id)
+                .gte('timestamp', todayStartD.toISOString());
+            
+            window.globalDebtorAckTodayMap = {};
+            if (debtorAckLogs) {
+                debtorAckLogs.forEach(l => {
+                    // Any follow-up activity today = acknowledged
+                    window.globalDebtorAckTodayMap[l.ledger_id] = true;
+                });
+            }
+
+            // Route instantly to the filter engine so "My Tasks" applies on page load!
+            await filterDebtors();
+
+        } catch (error) {
+            tbody.innerHTML = `<tr><td colspan="5" class="text-center p-8 text-red-500 font-bold bg-red-50">System Error: ${error.message}</td></tr>`;
+        }
+    }
+
+    async function filterDebtors() {
+        const searchEl = document.getElementById('debtorSearch');
+        const query = searchEl ? searchEl.value.toLowerCase() : '';
+        const assignFilterEl = document.getElementById('debtorAssignFilter');
+        const assignFilter = assignFilterEl ? assignFilterEl.value : 'all';
+
+        // 1. Identify which clients are specifically assigned to ME for Debtor Recovery
+        const myDebtorClients = (window.globalAssignmentsList || [])
+            .filter(a => a.service_type === 'Debtor Recovery' && a.maker_id === currentUser.id)
+            .map(a => a.client_id);
+
+        // 2. Fetch all ledger mappings
+        const { data: fullMaps } = await supabaseClient.from('client_ledger_mapping').select('ledger_id, client_id, clients(client_id, display_name)');
+
+        const mappingMap = {}; 
+        const fMap = {};       
+        const myAllowedLedgers = new Set(); 
+
+        if (fullMaps) {
+            fullMaps.forEach(m => {
+                mappingMap[m.ledger_id] = true;
+                if (!fMap[m.ledger_id]) fMap[m.ledger_id] = [];
+                if (m.clients) fMap[m.ledger_id].push(m.clients);
+
+                if (myDebtorClients.includes(m.client_id)) {
+                    myAllowedLedgers.add(m.ledger_id);
+                }
+            });
+        }
+
+        if (!globalDebtorsList) globalDebtorsList = [];
+
+        // 3. Filter the master list
+        const filtered = globalDebtorsList.filter(l => {
+            const safeId = l.ledger_id || l.id;
+
+            const isAssignedToMe = myAllowedLedgers.has(safeId);
+            const isLastContactedByMe = globalContactMap[safeId]?.user_id === currentUser.id;
+
+            if (assignFilter === 'mine' && !isAssignedToMe && !isLastContactedByMe) {
+                return false; 
+            }
+
+            const isUnmapped = !mappingMap[safeId];
+            if (query === 'unmapped' && isUnmapped) return true;
+
+            return l.tally_ledger_name.toLowerCase().includes(query);
+        });
+
+        // 4. Render the table
+        renderDebtorsTable(filtered, fMap);
+    }
+
+    async function acknowledgeDebtorToday(ledgerId, event) {
+        if (event) event.stopPropagation();
+        try {
+            const { error } = await supabaseClient.from('follow_up_logs').insert([{
+                ledger_id: ledgerId,
+                user_id: currentUser.id,
+                note: `[Acknowledged Today] Debtor ledger reviewed — no action needed right now.`,
+                timestamp: new Date().toISOString()
+            }]);
+            if (error) throw error;
+
+            // Update local map and re-render
+            if (!window.globalDebtorAckTodayMap) window.globalDebtorAckTodayMap = {};
+            window.globalDebtorAckTodayMap[ledgerId] = true;
+            await filterDebtors(); // Re-render without full reload
+        } catch (err) {
+            alert('Error acknowledging: ' + err.message);
+        }
+    }
+
+    function renderDebtorsTable(ledgers, mappingMap) {
+        const tbody = document.getElementById('debtor-list');
+        tbody.innerHTML = '';
+        const today = new Date(); today.setHours(0,0,0,0);
+
+        if (ledgers.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center p-20 bg-white"><div class="flex flex-col items-center"><div class="h-16 w-16 bg-slate-50 text-slate-300 flex items-center justify-center rounded-full mb-4 text-2xl"><i class="fa-solid fa-folder-open"></i></div><p class="text-slate-400 font-bold tracking-tight">No active portfolios match your criteria.</p></div></td></tr>';
+            return;
+        }
+
+        ledgers.forEach(ledger => {
+            const safeId = ledger.ledger_id || ledger.id;
+            const lastContact = globalContactMap[safeId] ? globalContactMap[safeId].user.split(' ')[0] : 'N/A';
+            
+            let clientsHtml = '';
+            let ownerName = 'Unassigned';
+            
+            if (mappingMap && mappingMap[safeId] && mappingMap[safeId].length > 0) {
+                 clientsHtml = mappingMap[safeId].map(c => `<span onclick="event.stopPropagation(); openUniversalClientProfile('${c.client_id}')" class="text-[10px] font-bold text-indigo-600 hover:bg-indigo-600 hover:text-white transition-all cursor-pointer bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100 uppercase tracking-wider">${c.display_name}</span>`).join(' ');
+                 
+                 const firstClientId = mappingMap[safeId][0].client_id;
+                 const assignment = (window.globalAssignmentsList || []).find(a => a.client_id === firstClientId && a.service_type === 'Debtor Recovery');
+                 if (assignment) {
+                     const user = (window.globalTeamMembers || []).find(u => u.id === assignment.maker_id);
+                     if (user) ownerName = user.name;
+                 }
+            } else {
+                 clientsHtml = `<div id="map-inline-${safeId}" class="flex items-center gap-3 mt-2">
+                                    <span class="text-[9px] font-black text-amber-600 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 uppercase tracking-tighter animate-pulse">Unmapped Ledger</span>
+                                    <button onclick="openInlineMapping('${safeId}')" class="text-xs text-slate-400 hover:text-indigo-600 font-black flex items-center gap-1 transition-all"><i class="fa-solid fa-link text-[8px]"></i> Link Client</button>
+                                </div>`;
+            }
+
+            let dateDisplay = '<span class="text-slate-300">--</span>';
+            let sevBadge = '<span class="px-4 py-1.5 bg-slate-50 text-slate-400 rounded-xl font-black text-[11px] uppercase tracking-widest border border-slate-100">Pending Sync</span>';
+            let isOverdue = false;
+            
+            if (ledger.next_followup) {
+                const dDate = new Date(ledger.next_followup);
+                const dd = String(dDate.getDate()).padStart(2, '0');
+                const mm = String(dDate.getMonth() + 1).padStart(2, '0');
+                const yyyy = dDate.getFullYear();
+                dateDisplay = `${dd}-${mm}-${yyyy}`;
+                dDate.setHours(0,0,0,0);
+                const diffDays = Math.ceil((today - dDate) / (1000 * 60 * 60 * 24));
+                
+                if(diffDays > 0) { isOverdue = true; sevBadge = `<span class="px-4 py-1.5 bg-red-50 text-red-600 rounded-xl font-black text-[11px] uppercase tracking-widest border border-red-100 shadow-sm">${diffDays} Days Overdue</span>`; }
+                else if (diffDays === 0) sevBadge = `<span class="px-4 py-1.5 bg-amber-50 text-amber-600 rounded-xl font-black text-[11px] uppercase tracking-widest border border-amber-100 shadow-sm">Due Today</span>`;
+                else sevBadge = `<span class="px-4 py-1.5 bg-emerald-50 text-emerald-600 rounded-xl font-black text-[11px] uppercase tracking-widest border border-emerald-100 shadow-sm">Safe</span>`;
+            }
+
+            const ownerColor = ownerName === 'Unassigned' ? 'text-slate-400 bg-slate-50 border-slate-100' : 'text-indigo-700 bg-indigo-50 border-indigo-100';
+
+            let ackBtnHtml = '';
+            {
+                const isAckedToday = window.globalDebtorAckTodayMap && !!window.globalDebtorAckTodayMap[safeId];
+                if (isAckedToday) {
+                    ackBtnHtml = `<span onclick="event.stopPropagation()" class="mt-1 px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded text-[9px] font-black uppercase tracking-wider inline-flex items-center gap-1"><i class="fa-solid fa-square-check text-xs"></i>Checked Today</span>`;
+                } else {
+                    ackBtnHtml = `<button onclick="acknowledgeDebtorToday('${safeId}', event)" class="mt-1 px-2 py-0.5 bg-indigo-50 text-indigo-600 border border-indigo-200 rounded text-[9px] font-black uppercase tracking-wider inline-flex items-center gap-1 hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition"><i class="fa-regular fa-square text-xs"></i>Acknowledge</button>`;
+                }
+            }
+
+            tbody.innerHTML += `
+            <tr onclick='openDebtorDetails(${JSON.stringify(ledger).replace(/'/g, "&#39;")})' class="group hover:bg-slate-50/50 transition-all cursor-pointer">
+                <td class="px-8 py-7">
+                    <div class="font-black text-slate-800 text-lg tracking-tight mb-2 group-hover:text-indigo-600 transition-colors">${ledger.tally_ledger_name}</div>
+                    <div class="flex flex-wrap items-center gap-2 mb-4">${clientsHtml}</div>
+                    <div class="flex items-center gap-6">
+                        <div class="flex items-center gap-1.5 px-1.5 py-0.5 rounded border text-[9px] font-bold uppercase tracking-wider ${ownerColor}">
+                            <i class="fa-solid fa-user-tie"></i> ${ownerName}
+                        </div>
+                        <div class="flex items-center gap-2 text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+                            <i class="fa-solid fa-user-pen"></i> Last contacted by: <span class="text-slate-600">${lastContact}</span>
+                        </div>
+                        ${ackBtnHtml}
+                    </div>
+                </td>
+                <td class="px-8 py-7">
+                    <div class="font-black text-slate-900 text-xl tracking-tighter">₹${parseFloat(ledger.current_balance).toLocaleString('en-IN')}</div>
+                </td>
+                <td class="px-8 py-7 text-slate-800 font-black text-sm">${dateDisplay}</td>
+                <td class="px-8 py-7 whitespace-nowrap">${sevBadge}</td>
+                <td class="px-8 py-7 text-right">
+                    <button class="px-5 py-2.5 rounded-xl bg-white border border-slate-200 text-slate-700 hover:text-indigo-600 hover:border-indigo-600 hover:bg-indigo-50/50 group-hover:bg-indigo-600 group-hover:text-white group-hover:border-indigo-600 transition-all shadow-sm font-black text-xs uppercase tracking-wider active:scale-95">
+                        Manage
+                    </button>
+                </td>
+            </tr>`;
+        });
+    }
+
+    function openInlineMapping(ledgerId) {
+        const container = document.getElementById(`map-inline-${ledgerId}`);
+        container.innerHTML = `
+            <div class="flex items-center gap-2 mt-1">
+                <input type="text" list="global-client-datalist" id="inline-input-${ledgerId}" class="border border-gray-300 rounded px-2 py-1 text-xs outline-none w-48 shadow-sm" placeholder="Select client...">
+                <button onclick="saveInlineMapping('${ledgerId}', event)" class="bg-indigo-600 text-white px-3 py-1 rounded text-xs font-bold hover:bg-indigo-700 shadow-sm transition">Save</button>
+                <button onclick="loadDebtorsData()" class="text-gray-400 hover:text-gray-600 bg-white rounded p-1 shadow-sm border"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+        `;
+    }
+
+    async function saveInlineMapping(ledgerId, event) {
+        const inputVal = document.getElementById(`inline-input-${ledgerId}`).value.trim();
+        if(!inputVal) return alert("Please select a client from the dropdown.");
+        
+        const matchedClient = globalClientsList.find(c => c.display_name === inputVal);
+        if(!matchedClient) return alert("Client not found in directory. Check spelling.");
+        
+        const btn = event.currentTarget;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+        await supabaseClient.from('client_ledger_mapping').insert([{ client_id: matchedClient.client_id, ledger_id: ledgerId }]);
+        loadDebtorsData(); 
+    }
+
+    async function openDebtorDetails(ledger) {
+        currentActiveLedger = ledger;
+        document.getElementById('debtorManageDrawer').classList.remove('hidden');
+        document.getElementById('active-debtor-name').innerText = ledger.tally_ledger_name; 
+        document.getElementById('active-debtor-balance').innerText = `₹${parseFloat(ledger.current_balance).toLocaleString('en-IN')}`; 
+        
+        // Populate Owner Info
+        const ownerEl = document.getElementById('active-debtor-owner');
+        const transferSelect = document.getElementById('transferUserSelect');
+        
+        // Find assignment for this ledger's mapped clients
+        const safeId = ledger.ledger_id || ledger.id;
+        const { data: mappings } = await supabaseClient.from('client_ledger_mapping').select('client_id').eq('ledger_id', safeId);
+        
+        let currentMakerName = 'Unassigned';
+        let currentClientId = null;
+
+        if (mappings && mappings.length > 0) {
+            currentClientId = mappings[0].client_id;
+            
+            // 1. Try local cache
+            let assignment = (window.globalAssignmentsList || []).find(a => a.client_id === currentClientId && a.service_type === 'Debtor Recovery');
+            
+            // 2. Fallback to direct DB query if not in cache (Fix for 'Unassigned' bug)
+            if (!assignment) {
+                const { data: dbAssigned } = await supabaseClient.from('client_assignments')
+                    .select('*')
+                    .eq('client_id', currentClientId)
+                    .eq('service_type', 'Debtor Recovery')
+                    .maybeSingle();
+                if (dbAssigned) {
+                    assignment = dbAssigned;
+                    // Update cache for next time
+                    if (window.globalAssignmentsList) window.globalAssignmentsList.push(dbAssigned);
+                    else window.globalAssignmentsList = [dbAssigned];
+                }
+            }
+
+            if (assignment) {
+                const user = (window.globalTeamMembers || []).find(u => u.id === assignment.maker_id);
+                if (user) currentMakerName = user.name;
+            }
+        }
+        ownerEl.innerText = currentMakerName;
+
+        // Populate Transfer Dropdown
+        if (transferSelect) {
+            const team = window.globalTeamMembers || [];
+            transferSelect.innerHTML = '<option value="">-- Transfer Case --</option>';
+            team.forEach(u => {
+                transferSelect.innerHTML += `<option value="${u.id}">${u.name}</option>`;
+            });
+            transferSelect.dataset.clientId = currentClientId;
+        }
+
+        document.getElementById('callNotes').value = ''; 
+        document.getElementById('amtPromised').value = ''; 
+        document.getElementById('nextDate').value = '';
+        document.getElementById('partialPayAmt').value = '';
+        document.getElementById('partialPayBtn').innerHTML = '<i class="fa-solid fa-hand-holding-dollar"></i> Partial Pay';
+        document.getElementById('fullPayBtn').innerHTML = '<i class="fa-solid fa-check-double"></i> Mark Fully Paid';
+
+        const historyContainer = document.getElementById('debtor-history');
+        historyContainer.innerHTML = '<div class="text-center text-gray-400 text-sm py-4"><i class="fa-solid fa-spinner fa-spin"></i> Loading history...</div>';
+        
+        const { data: logs } = await supabaseClient.from('follow_up_logs').select('*, users(name)').eq('ledger_id', safeId).order('timestamp', { ascending: false });
+        
+        historyContainer.innerHTML = '';
+        if (logs && logs.length > 0) {
+            logs.forEach(log => {
+                const dateStr = new Date(log.timestamp).toLocaleDateString('en-IN', { day:'numeric', month:'short', year:'numeric' });
+                const promisedHtml = log.amount_promised > 0 ? `<span class="text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded border border-emerald-100">Payment Promised: ₹${parseFloat(log.amount_promised).toLocaleString('en-IN')}</span>` : '';
+                
+                let followupHtml = '';
+                if (log.followup_date) {
+                    const fDate = new Date(log.followup_date).toLocaleDateString('en-IN', { day:'numeric', month:'short', year:'numeric' });
+                    followupHtml = `<span class="text-xs font-bold text-amber-600 bg-amber-50 px-2 py-1 rounded border border-amber-100"><i class="fa-regular fa-calendar mr-1"></i>Next Follow-up: ${fDate}</span>`;
+                }
+                
+                historyContainer.innerHTML += `
+                <div class="mb-5 pb-5 border-b border-gray-100 last:border-0">
+                    <div class="flex justify-between items-center mb-2">
+                        <span class="text-xs font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded">${log.users?.name || 'System'}</span>
+                        <span class="text-xs font-bold text-gray-400 uppercase tracking-wide">${dateStr}</span>
+                    </div>
+                    <p class="text-sm text-gray-700 leading-relaxed">${log.notes || 'No notes left.'}</p>
+                    <div class="flex flex-wrap gap-2 mt-3">
+                        ${promisedHtml}
+                        ${followupHtml}
+                    </div>
+                </div>`;
+            });
+        } else {
+            historyContainer.innerHTML = '<div class="text-center text-gray-400 text-sm py-4">No previous call history.</div>';
+        }
+    }
+
+    async function transferDebtorCase() {
+        const select = document.getElementById('transferUserSelect');
+        const targetUserId = select.value;
+        const clientId = select.dataset.clientId;
+        
+        if (!targetUserId || !clientId) return alert("Please select a user to transfer to.");
+        
+        const targetUser = (window.globalTeamMembers || []).find(u => u.id === targetUserId);
+        if (!confirm(`Transfer this case to ${targetUser?.name}?`)) return;
+        
+        const btn = select.nextElementSibling;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+        
+        try {
+            // 1. Update/Insert Assignment
+            const { data: existing } = await supabaseClient.from('client_assignments')
+                .select('id')
+                .eq('client_id', clientId)
+                .eq('service_type', 'Debtor Recovery')
+                .maybeSingle();
+            
+            let finalAssignmentId = null;
+            if (existing) {
+                await supabaseClient.from('client_assignments').update({ maker_id: targetUserId }).eq('id', existing.id);
+                finalAssignmentId = existing.id;
+            } else {
+                const { data: inserted } = await supabaseClient.from('client_assignments').insert([{ client_id: clientId, service_type: 'Debtor Recovery', maker_id: targetUserId }]).select();
+                if (inserted) finalAssignmentId = inserted[0].id;
+            }
+            
+            // 2. Update local cache immediately so the UI reflects change without full reload
+            if (window.globalAssignmentsList) {
+                const idx = window.globalAssignmentsList.findIndex(a => a.client_id === clientId && a.service_type === 'Debtor Recovery');
+                if (idx > -1) {
+                    window.globalAssignmentsList[idx].maker_id = targetUserId;
+                } else {
+                    window.globalAssignmentsList.push({ id: finalAssignmentId, client_id: clientId, service_type: 'Debtor Recovery', maker_id: targetUserId });
+                }
+            }
+
+            // 3. Log the transfer
+            const safeId = currentActiveLedger.ledger_id || currentActiveLedger.id;
+            await supabaseClient.from('follow_up_logs').insert([{
+                ledger_id: safeId,
+                user_id: currentUser.id,
+                notes: `System Log: Case transferred to ${targetUser?.name}`,
+                timestamp: new Date().toISOString()
+            }]);
+            
+            alert(`Case successfully transferred to ${targetUser?.name}`);
+            closeDebtorDrawer();
+            
+            // Full refresh to update table rows
+            if (typeof globalRefresh === 'function') globalRefresh(); else loadDebtorsData();
+        } catch (err) {
+            alert("Error transferring case: " + err.message);
+        } finally {
+            btn.innerHTML = 'Transfer';
+        }
+    }
+
+    function closeDebtorDrawer() {
+        document.getElementById('debtorManageDrawer').classList.add('hidden');
+    }
+
+    async function markAsPaid(event) {
+        if(confirm(`Are you absolutely sure you want to mark ${currentActiveLedger.tally_ledger_name} as fully PAID?`)) {
+            const btn = document.getElementById('fullPayBtn');
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving...';
+            
+            const amt = parseFloat(currentActiveLedger.current_balance);
+            const safeId = currentActiveLedger.ledger_id || currentActiveLedger.id;
+            const timestamp = new Date().toISOString();
+            
+            await supabaseClient.from('payments').insert([{ledger_id: safeId, user_id: currentUser.id, amount: amt, payment_date: timestamp}]);
+            await supabaseClient.from('tally_ledgers').delete().eq('ledger_id', safeId);
+            
+            // Log for pulse tracking
+            await supabaseClient.from('follow_up_logs').insert([{ 
+                ledger_id: safeId, 
+                user_id: currentUser.id, 
+                notes: `System Log: Account fully paid (₹${amt.toLocaleString('en-IN')}).`, 
+                amount_promised: 0, 
+                timestamp: timestamp 
+            }]);
+            
+            closeDebtorDrawer();
+            if (typeof globalRefresh === 'function') globalRefresh(); else loadDebtorsData();
+        }
+    }
+
+    async function markPartiallyPaid(event) {
+        const amt = parseFloat(document.getElementById('partialPayAmt').value);
+        if (!amt || amt <= 0) return alert("Please enter a valid partial payment amount.");
+        
+        const currentBal = parseFloat(currentActiveLedger.current_balance);
+        if (amt >= currentBal) return markAsPaid(event);
+
+        if(confirm(`Record a partial payment of ₹${amt.toLocaleString('en-IN')} for ${currentActiveLedger.tally_ledger_name}?`)) {
+            const btn = document.getElementById('partialPayBtn');
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+            
+            const safeId = currentActiveLedger.ledger_id || currentActiveLedger.id;
+            const newBalance = currentBal - amt;
+            const timestamp = new Date().toISOString();
+            
+            await supabaseClient.from('tally_ledgers').update({current_balance: newBalance}).eq('ledger_id', safeId);
+            await supabaseClient.from('payments').insert([{ledger_id: safeId, user_id: currentUser.id, amount: amt, payment_date: timestamp}]);
+            
+            const autoNote = `System Log: Partial payment of ₹${amt.toLocaleString('en-IN')} recorded.`;
+            // Ensure timestamp is injected here for pulse tracking
+            await supabaseClient.from('follow_up_logs').insert([{ ledger_id: safeId, user_id: currentUser.id, notes: autoNote, amount_promised: 0, timestamp: timestamp }]);
+            
+            closeDebtorDrawer(); 
+            if (typeof globalRefresh === 'function') globalRefresh(); else loadDebtorsData();
+        }
+    }
+
+    function draftWithAI() {
+        const notesBox = document.getElementById('callNotes');
+        if (!notesBox.value.trim()) return alert("Please type some rough notes first!");
+        
+        const aiBtn = document.getElementById('aiDraftBtn'); 
+        const originalText = aiBtn.innerHTML;
+        aiBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Drafting...'; 
+        aiBtn.disabled = true;
+        
+        // Dual-environment support check
+        const isAppsScript = typeof google !== 'undefined' && google.script && google.script.run;
+        
+        if (isAppsScript) {
+            google.script.run
+                .withSuccessHandler(function(draftedNote) {
+                    notesBox.value = draftedNote;
+                    aiBtn.innerHTML = originalText;
+                    aiBtn.disabled = false;
+                })
+                .withFailureHandler(function(error) {
+                    alert(error.message);
+                    aiBtn.innerHTML = originalText;
+                    aiBtn.disabled = false;
+                })
+                .generateAINote(notesBox.value.trim());
+        } else {
+            // Netlify & Static Web App environment direct integration
+            const apiKey = 'AIzaSyAH2aKEJX1iYHKxK_9zUSObAhbvZfJSdmc'; 
+            const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=' + apiKey;
+            const prompt = "Rewrite these rough debtor follow-up notes into a brief, professional summary for a firm's internal log. Do not use greetings or pleasantries. Keep it to 1-2 concise sentences. Rough notes: " + notesBox.value.trim();
+            const payload = { "contents": [{ "parts": [{ "text": prompt }] }] };
+            
+            fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            })
+            .then(res => {
+                if (!res.ok) throw new Error("HTTP Status " + res.status);
+                return res.json();
+            })
+            .then(json => {
+                if (json.candidates && json.candidates.length > 0 && json.candidates[0].content && json.candidates[0].content.parts && json.candidates[0].content.parts[0]) {
+                    const draftedNote = json.candidates[0].content.parts[0].text.trim();
+                    notesBox.value = draftedNote;
+                } else {
+                    throw new Error("Invalid response format from Gemini API");
+                }
+            })
+            .catch(err => {
+                alert("Failed to generate AI note: " + err.message);
+            })
+            .finally(() => {
+                aiBtn.innerHTML = originalText;
+                aiBtn.disabled = false;
+            });
+        }
+    }
+
+    async function saveCallLog() {
+        if (!currentActiveLedger) return;
+        
+        const notes = document.getElementById('callNotes').value.trim();
+        const nextDate = document.getElementById('nextDate').value;
+        const amtPromised = document.getElementById('amtPromised').value || 0;
+        
+        if (!notes || !nextDate) return alert("Call notes and Next Follow-up Date are required.");
+
+        const currentFollowup = currentActiveLedger.next_followup;
+        const isDebtorOverdue = currentFollowup ? (new Date(currentFollowup) < new Date().setHours(0,0,0,0)) : false;
+        const isDateChanged = currentFollowup !== nextDate;
+
+        if (isDebtorOverdue && (!notes || !isDateChanged)) {
+            return alert("This debtor is overdue. You must write notes AND update the follow-up date to save.");
+        }
+        
+        const btn = document.getElementById('saveLogBtn');
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving...';
+        
+        try {
+            const safeId = currentActiveLedger.ledger_id || currentActiveLedger.id;
+            const exactNow = new Date().toISOString(); 
+            
+            await supabaseClient.from('follow_up_logs').insert([{
+                ledger_id: safeId,
+                user_id: currentUser.id,
+                notes: notes,
+                amount_promised: parseFloat(amtPromised) || 0,
+                followup_date: nextDate,
+                timestamp: exactNow 
+            }]);
+            
+            await supabaseClient.from('tally_ledgers').update({ next_followup: nextDate }).eq('ledger_id', safeId);
+            
+            btn.innerHTML = '<i class="fa-solid fa-check"></i> Save Call Log';
+            
+            openDebtorDetails(currentActiveLedger);
+            loadDebtorsData();
+        } catch (err) {
+            alert("Error saving log: " + err.message);
+            btn.innerHTML = '<i class="fa-solid fa-check"></i> Save Call Log';
+        }
+    }
+
+    async function processTallyFile(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+        
+        const uploadBtn = document.getElementById('uploadTallyBtn');
+        uploadBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i> Syncing...';
+        
+        const reader = new FileReader();
+        reader.onload = async function(e) {
+            try {
+                const jsonData = JSON.parse(e.target.result);
+                let uniqueLedgers = {};
+                
+                const searchForLedgers = (obj) => {
+                    if (Array.isArray(obj)) {
+                        obj.forEach(searchForLedgers);
+                        return;
+                    }
+                    
+                    if (typeof obj === 'object' && obj !== null) {
+                        if (obj.dspaccname && obj.dspaccname.dspdispname) {
+                            let name = obj.dspaccname.dspdispname;
+                            let balAmt = 0;
+                            
+                            if (obj.dspaccinfo && obj.dspaccinfo.length > 0) {
+                                let info = obj.dspaccinfo[0];
+                                if (info.dspcldramt && info.dspcldramt.dspcldramta !== undefined) {
+                                    let rawVal = parseFloat(info.dspcldramt.dspcldramta);
+                                    if (rawVal < 0) {
+                                        balAmt = Math.abs(rawVal);
+                                    } else {
+                                        balAmt = 0;
+                                    }
+                                } 
+                                else if (info.dspclcramt && info.dspclcramt.dspclcramta !== undefined) {
+                                    balAmt = 0;
+                                }
+                            }
+                            
+                            if (balAmt > 0 || uniqueLedgers[name] === undefined) {
+                                uniqueLedgers[name] = balAmt;
+                            }
+                        } 
+                        else if (obj.LEDGERNAME || obj.LedgerName || obj.DSPDISPNAME || obj.dspdispname) {
+                            let name = obj.LEDGERNAME || obj.LedgerName || obj.DSPDISPNAME || obj.dspdispname;
+                            let bal = obj.BALANCE || obj.ClosingBalance || obj.clbal || obj.DSPCLBAL;
+                            if (name && bal !== undefined) {
+                                let parsedBal = Math.abs(parseFloat(bal)) || 0;
+                                if (parseFloat(bal) < 0 || String(bal).toUpperCase().includes('CR')) {
+                                    parsedBal = 0;
+                                }
+                                
+                                if (parsedBal > 0 || uniqueLedgers[name] === undefined) {
+                                    uniqueLedgers[name] = parsedBal;
+                                }
+                            }
+                        }
+                        Object.values(obj).forEach(searchForLedgers);
+                    }
+                };
+                
+                searchForLedgers(jsonData);
+                const { data: dbLedgers } = await supabaseClient.from('tally_ledgers').select('*');
+                const dbLedgerMap = {};
+                if (dbLedgers) {
+                    dbLedgers.forEach(l => dbLedgerMap[l.tally_ledger_name] = l);
+                }
+                
+                const timestamp = new Date().toISOString();
+                const ledgersToInsert = [];
+
+                for (let tallyName in uniqueLedgers) {
+                    const newBal = uniqueLedgers[tallyName];
+                    const existingDbLedger = dbLedgerMap[tallyName];
+
+                    if (existingDbLedger) {
+                        const oldBal = parseFloat(existingDbLedger.current_balance) || 0;
+                        if (newBal < oldBal) {
+                            const recovered = oldBal - newBal;
+                            await supabaseClient.from('payments').insert([{ledger_id: existingDbLedger.ledger_id, amount: recovered, user_id: currentUser.id, payment_date: timestamp}]);
+                        }
+                        
+                        if (newBal <= 0) {
+                            await supabaseClient.from('tally_ledgers').delete().eq('ledger_id', existingDbLedger.ledger_id);
+                        } else {
+                            await supabaseClient.from('tally_ledgers').update({
+                                current_balance: newBal,
+                                last_sync_date: timestamp,
+                                last_sync_by: currentUser.name.split(' ')[0]
+                            }).eq('ledger_id', existingDbLedger.ledger_id);
+                        }
+                    } else {
+                        if (newBal > 0) {
+                            ledgersToInsert.push({
+                                tally_ledger_name: tallyName,
+                                current_balance: newBal,
+                                last_sync_date: timestamp,
+                                last_sync_by: currentUser.name.split(' ')[0]
+                            });
+                        }
+                    }
+                }
+                
+                if (ledgersToInsert.length > 0) {
+                    await supabaseClient.from('tally_ledgers').insert(ledgersToInsert);
+                }
+                
+                const mapSection = document.getElementById('mapping-section');
+                if (mapSection) mapSection.classList.add('hidden');
+                
+                alert("Sync complete! New unmapped ledgers have been added to your list. Credits were successfully ignored.");
+                if (typeof globalRefresh === 'function') globalRefresh(); else loadDebtorsData();
+
+            } catch (err) {
+                alert("Error parsing JSON file: " + err.message);
+            }
+            
+            uploadBtn.innerHTML = '<i class="fa-solid fa-cloud-arrow-up text-lg"></i> Upload Tally JSON';
+            document.getElementById('tallyJsonInput').value = ''; 
+        };
+        reader.readAsText(file);
+    }
+</script>

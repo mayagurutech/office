@@ -1,0 +1,181 @@
+<div id="debtorManageDrawer" class="hidden fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex justify-end transition-all duration-500">
+    <div class="bg-white w-full max-w-5xl h-full shadow-[0_0_50px_-12px_rgba(0,0,0,0.3)] flex flex-col animate-slide-in-right overflow-hidden">
+        <!-- Drawer Header -->
+        <div class="px-10 py-8 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+            <div class="flex items-center gap-6">
+                <div class="h-14 w-14 rounded-2xl bg-indigo-600 text-white flex items-center justify-center text-2xl shadow-lg shadow-indigo-100">
+                    <i class="fa-solid fa-building-columns"></i>
+                </div>
+                <div>
+                    <span class="text-[10px] font-black text-indigo-600 uppercase tracking-[0.2em] mb-1 block">Account Ledger Management</span>
+                    <h3 id="active-debtor-name" class="text-3xl font-black text-slate-900 tracking-tight">Debtor Name</h3>
+                </div>
+            </div>
+            <div class="flex items-center gap-8">
+                <div class="text-right pr-8 border-r border-slate-200">
+                    <span class="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">Total Liability</span>
+                    <span id="active-debtor-balance" class="text-3xl font-black text-red-600 tracking-tight">₹0</span>
+                </div>
+                <button onclick="closeDebtorDrawer()" class="text-slate-400 hover:text-slate-900 bg-white rounded-2xl w-12 h-12 shadow-sm border border-slate-100 flex items-center justify-center transition-all hover:rotate-90 active:scale-90">
+                    <i class="fa-solid fa-xmark text-xl"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- Quick Actions Bar -->
+        <div class="bg-white px-10 py-6 border-b border-slate-100 flex flex-wrap items-center gap-6 shadow-sm relative z-10">
+            <div class="flex items-center gap-3 border-r border-slate-100 pr-6">
+                <div class="h-10 w-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-sm shadow-inner"><i class="fa-solid fa-user-tie"></i></div>
+                <div>
+                    <span class="text-xs font-black text-slate-400 uppercase tracking-widest block mb-0.5">Assigned Owner</span>
+                    <span id="active-debtor-owner" class="text-xs font-black text-slate-800">Unassigned</span>
+                </div>
+            </div>
+            
+            <div class="flex items-center gap-2">
+                <select id="transferUserSelect" class="rounded-xl border border-slate-200 px-4 py-3 text-xs outline-none focus:ring-4 focus:ring-indigo-50 bg-slate-50 font-bold w-44 transition-all appearance-none cursor-pointer">
+                    <option value="">-- Transfer Case --</option>
+                </select>
+                <button onclick="transferDebtorCase()" class="bg-indigo-600 text-white px-5 py-3 rounded-xl font-black hover:bg-black transition-all shadow-lg shadow-indigo-100 text-[10px] uppercase tracking-wider active:scale-95">Transfer</button>
+            </div>
+
+            <div class="flex-1"></div>
+
+            <div class="flex items-center gap-3">
+                <div class="relative group">
+                    <span class="absolute left-4 top-3.5 font-black text-slate-400 text-sm">₹</span>
+                    <input type="number" id="partialPayAmt" placeholder="Amount" class="w-40 rounded-xl border border-slate-200 pl-8 p-3.5 text-sm outline-none focus:ring-4 focus:ring-emerald-50 bg-slate-50 font-black text-slate-700 transition-all group-hover:border-emerald-200">
+                </div>
+                <button id="partialPayBtn" onclick="markPartiallyPaid(event)" class="bg-white text-emerald-600 border border-emerald-200 hover:bg-emerald-600 hover:text-white px-6 py-3.5 rounded-xl font-black transition-all shadow-sm text-xs flex items-center gap-2 active:scale-95">
+                    <i class="fa-solid fa-hand-holding-dollar"></i> Partial Pay
+                </button>
+                <button id="fullPayBtn" onclick="markAsPaid(event)" class="bg-emerald-600 text-white hover:bg-black px-6 py-3.5 rounded-xl font-black transition-all shadow-lg shadow-emerald-100 text-xs flex items-center gap-2 active:scale-95">
+                    <i class="fa-solid fa-check-double"></i> Mark fully paid
+                </button>
+            </div>
+        </div>
+
+        <!-- Main Content Split -->
+        <div class="flex-1 flex overflow-hidden">
+            <!-- Timeline Section -->
+            <div class="w-[45%] border-r border-slate-100 p-8 flex flex-col bg-slate-50/30">
+                <div class="flex justify-between items-center mb-8">
+                    <h4 class="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-3">
+                        <i class="fa-solid fa-clock-rotate-left text-indigo-500"></i> Interaction History
+                    </h4>
+                    <span class="px-2 py-0.5 rounded-full bg-indigo-50 text-xs font-black text-indigo-600">LATEST LOGS</span>
+                </div>
+                <div id="debtor-history" class="flex-1 overflow-y-auto pr-6 space-y-6 custom-scrollbar"></div>
+            </div>
+            
+            <!-- Log Entry Section -->
+            <div class="w-[55%] p-8 flex flex-col bg-white overflow-y-auto">
+                <div class="flex items-center gap-3 mb-8">
+                    <div class="h-1 w-8 bg-indigo-600 rounded-full"></div>
+                    <h4 class="text-[10px] font-black text-indigo-600 uppercase tracking-[0.2em] flex items-center gap-2">
+                        <i class="fa-solid fa-pen-nib"></i> Record New Follow-up
+                    </h4>
+                </div>
+                
+                <div class="flex-1 space-y-8">
+                    <div class="relative group">
+                        <div class="flex justify-between items-center mb-3">
+                            <label class="block text-xs font-black text-slate-800 uppercase tracking-widest">Observation Notes</label>
+                            <button id="aiDraftBtn" onclick="draftWithAI()" class="text-[10px] font-black text-violet-600 bg-violet-50 hover:bg-violet-600 hover:text-white px-4 py-2 rounded-xl transition-all active:scale-95 flex items-center gap-2 border border-violet-100">
+                                <i class="fa-solid fa-wand-magic-sparkles"></i> AI Refine
+                            </button>
+                        </div>
+                        <textarea id="callNotes" rows="6" class="w-full rounded-3xl border border-slate-200 p-6 text-sm outline-none focus:ring-4 focus:ring-indigo-50 resize-none shadow-sm bg-slate-50/50 font-medium text-slate-700 transition-all group-hover:border-indigo-200" placeholder="Summarize your discussion..."></textarea>
+                    </div>
+
+                    <div class="bg-indigo-50/30 rounded-[2.5rem] p-8 border border-indigo-50/50">
+                        <div class="flex items-center gap-3 mb-6 border-b border-indigo-100 pb-4">
+                            <i class="fa-solid fa-calendar-check text-indigo-600"></i>
+                            <h5 class="text-xs font-black text-indigo-900 uppercase tracking-widest">Next Action Plan</h5>
+                        </div>
+                        <div class="grid grid-cols-2 gap-8">
+                            <div>
+                                <label class="block text-[10px] font-black text-slate-500 uppercase tracking-widest mb-3">Commitment Amount</label>
+                                <div class="relative group">
+                                    <span class="absolute left-4 top-3 font-black text-slate-400">₹</span>
+                                    <input type="number" id="amtPromised" class="w-full rounded-2xl border border-slate-200 pl-8 p-3 text-sm outline-none focus:ring-4 focus:ring-indigo-50 bg-white font-black text-slate-700 transition-all group-hover:border-indigo-200" placeholder="0.00">
+                                </div>
+                            </div>
+                            <div>
+                                <label class="block text-[10px] font-black text-red-500 uppercase tracking-widest mb-3">Target Date *</label>
+                                <input type="date" id="nextDate" class="w-full rounded-2xl border border-red-200 p-3 text-sm outline-none focus:ring-4 focus:ring-red-50 bg-white font-black text-slate-700 transition-all hover:border-red-400">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-10 pt-8 border-t border-slate-100">
+                    <button onclick="saveCallLog()" id="saveLogBtn" class="w-full bg-slate-900 text-white font-black py-5 rounded-[2rem] shadow-xl shadow-slate-200 hover:bg-black transition-all text-sm uppercase tracking-[0.2em] flex justify-center items-center gap-3 active:scale-[0.98] group">
+                        <i class="fa-solid fa-circle-check text-emerald-400 group-hover:scale-125 transition-transform"></i> 
+                        Submit Log Entry
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="complianceBuilderOverlay" class="hidden fixed inset-0 z-50 bg-gray-900 bg-opacity-60 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-4xl h-[80vh] flex overflow-hidden">
+        <div class="w-1/3 border-r border-gray-200 bg-gray-50 flex flex-col">
+            <div class="p-4 border-b border-gray-200 flex justify-between items-center bg-white">
+                <h3 class="font-bold text-gray-800">Master Services</h3>
+            </div>
+            <div class="p-3 border-b border-gray-200 bg-gray-100 flex gap-2">
+                <input type="text" id="newMasterServiceName" placeholder="Add new service..." class="flex-1 border border-gray-300 rounded p-1.5 text-sm outline-none focus:border-blue-500 shadow-sm">
+                <button onclick="addNewMasterService()" class="bg-blue-600 text-white px-3 py-1.5 rounded text-sm font-bold shadow-sm hover:bg-blue-700 transition" title="Add Service"><i class="fa-solid fa-plus"></i></button>
+            </div>
+            <div id="masterServicesList" class="flex-1 overflow-y-auto"></div>
+        </div>
+        <div class="w-2/3 flex flex-col bg-white">
+            <div class="p-4 border-b border-gray-200 flex justify-between items-center bg-white"><h3 class="font-bold text-xl text-blue-700" id="builderServiceName">Select a Service</h3><button onclick="closeComplianceBuilder()" class="text-gray-400 hover:text-gray-800 text-xl"><i class="fa-solid fa-xmark"></i></button></div>
+            <div id="deadlineEditorArea" class="flex-1 overflow-y-auto p-6 hidden bg-slate-50 relative">
+                <div class="flex justify-between items-end mb-4"><h4 class="font-bold text-gray-700 uppercase tracking-wider text-xs">Custom Deadlines & Reminders</h4><button onclick="appendDeadlineRow()" class="text-sm font-bold text-blue-600 hover:text-blue-800"><i class="fa-solid fa-plus"></i> Add Deadline</button></div>
+                <div class="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden"><table class="w-full text-left"><thead class="bg-gray-100 border-b border-gray-200 text-xs font-bold text-gray-600 uppercase"><tr><th class="p-3">Title / Description</th><th class="p-3 w-40">Due Date</th><th class="p-3 w-32 text-center">Remind Days Before</th><th class="p-3 w-12"></th></tr></thead><tbody id="deadlines-tbody"></tbody></table></div>
+            </div>
+            <div class="p-4 border-t border-gray-200 bg-gray-50 flex justify-end gap-3"><button onclick="saveDeadlines()" id="saveDeadlinesBtn" class="px-6 py-2.5 font-bold bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-sm">Save Deadlines</button></div>
+        </div>
+    </div>
+</div>
+
+<div id="eligibleClientsDrawer" class="hidden fixed inset-0 z-50 bg-gray-900 bg-opacity-60 flex justify-end transition-opacity">
+    <div class="bg-white w-full max-w-lg h-full shadow-2xl flex flex-col animate-slide-in-right">
+        <div class="px-6 py-5 border-b border-gray-200 bg-gradient-to-r from-orange-500 to-red-500 text-white flex justify-between items-center">
+            <div>
+                <span class="text-xs font-bold text-orange-100 uppercase tracking-wider mb-1 block" id="elg-service-name">Service Name</span>
+                <h3 id="elg-deadline-title" class="text-2xl font-bold">Deadline Title</h3>
+                <p class="text-sm mt-1 text-orange-50 font-medium"><i class="fa-regular fa-calendar mr-1"></i> Due: <span id="elg-due-date"></span></p>
+            </div>
+            <button onclick="closeEligibleClientsDrawer()" class="text-white hover:text-gray-200 bg-white/20 rounded-full w-10 h-10 flex items-center justify-center transition"><i class="fa-solid fa-xmark text-xl"></i></button>
+        </div>
+        <div class="p-4 border-b border-gray-100 bg-gray-50 flex justify-between items-center">
+            <h4 class="font-bold text-gray-700 text-sm">Eligible Clients (<span id="elg-client-count">0</span>)</h4>
+            <button onclick="generateBulkTasksFromReminder()" class="bg-indigo-600 text-white px-4 py-2 rounded text-xs font-bold shadow-sm hover:bg-indigo-700 transition"><i class="fa-solid fa-bolt mr-1"></i> Generate Selected Tasks</button>
+        </div>
+        <div class="flex-1 overflow-y-auto p-4 bg-slate-50">
+            <ul id="elg-client-list" class="divide-y divide-gray-100 border border-gray-100 rounded-lg bg-white shadow-sm"></ul>
+        </div>
+    </div>
+</div>
+
+<div id="syncTallyModal" class="hidden fixed inset-0 z-[80] bg-gray-900 bg-opacity-60 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+        <div class="bg-indigo-600 p-6 text-white flex justify-between items-center">
+            <h3 class="text-xl font-bold"><i class="fa-solid fa-arrows-rotate mr-2"></i> Sync Tally JSON</h3>
+            <button onclick="document.getElementById('syncTallyModal').classList.add('hidden')" class="text-white/70 hover:text-white"><i class="fa-solid fa-xmark text-xl"></i></button>
+        </div>
+        <div class="p-6">
+            <p class="text-sm text-gray-600 mb-4">Paste your Tally JSON export data below to instantly update ledger balances.</p>
+            <textarea id="tallyJsonData" rows="6" class="w-full rounded-lg border border-gray-300 p-3 text-sm outline-none focus:ring-2 focus:ring-indigo-500 font-mono text-xs bg-gray-50" placeholder='[&#10;{&#10;    "LEDGERNAME": "Anant Enterprises",&#10;    "BALANCE": 50000&#10;  }&#10;]'></textarea>
+        </div>
+        <div class="p-6 border-t border-gray-100 bg-gray-50 flex gap-3">
+            <button onclick="document.getElementById('syncTallyModal').classList.add('hidden')" class="flex-1 py-3 font-bold text-gray-600 hover:bg-gray-200 rounded-lg transition bg-white border border-gray-300">Cancel</button>
+            <button onclick="processTallyJSON()" id="processJsonBtn" class="flex-1 py-3 font-bold bg-indigo-600 text-white hover:bg-indigo-700 rounded-lg transition shadow-sm">Process JSON</button>
+        </div>
+    </div>
+</div>

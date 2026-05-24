@@ -1,0 +1,1666 @@
+<div id="view-dashboard" class="hidden p-3 sm:p-4 md:p-8 bg-slate-50 overflow-y-auto w-full h-full">
+    
+    <div class="mb-6 md:mb-8 flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
+        <div class="flex-1 w-full">
+            <h2 id="dash-greeting" class="text-3xl sm:text-4xl font-black text-slate-800 tracking-tight leading-tight mb-4">Welcome back! &#128075;</h2>
+        </div>
+        <div class="text-xs sm:text-sm text-indigo-700 font-black bg-white px-5 py-3 rounded-2xl shadow-sm border border-slate-100 whitespace-nowrap flex items-center gap-2 self-end md:self-auto">
+            <div class="w-2 h-2 rounded-full bg-indigo-500 animate-ping"></div>
+            <i class="fa-regular fa-calendar-check text-lg opacity-70"></i> <span id="currentDateDisplay">Date</span>
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 mb-8">
+        <!-- Performance Stats -->
+        <div class="lg:col-span-8">
+            <h3 class="text-xs font-black text-slate-400 uppercase tracking-[0.2em] mb-4 flex items-center gap-2">
+                <span class="w-8 h-[1px] bg-slate-200"></span> Performance Analytics
+            </h3>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                
+                <div class="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 flex flex-col items-center text-center group hover:shadow-xl hover:-translate-y-1 transition-all duration-300">
+                    <h4 class="text-slate-400 font-bold text-xs uppercase tracking-wider mb-4">Master Score</h4>
+                    <div class="relative w-24 h-24 flex items-center justify-center">
+                        <svg class="w-full h-full transform -rotate-90">
+                            <circle cx="48" cy="48" r="40" stroke="currentColor" stroke-width="10" fill="transparent" class="text-slate-50" />
+                            <circle id="dash-progress-circle" cx="48" cy="48" r="40" stroke="currentColor" stroke-width="10" fill="transparent" stroke-dasharray="251.2" stroke-dashoffset="251.2" stroke-linecap="round" class="text-indigo-600 transition-all duration-1000 ease-out" />
+                        </svg>
+                        <span class="absolute text-xl font-black text-slate-800" id="dash-my-percent">0%</span>
+                    </div>
+                    <p class="text-[11px] font-bold text-slate-400 mt-4"><span id="dash-my-completed" class="text-indigo-600">0</span> / <span id="dash-my-total">0</span> <span class="opacity-60">Success Rate</span></p>
+                </div>
+
+                <div onclick="openPulseExplanationModal()" class="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 flex flex-col items-center text-center group hover:shadow-xl hover:-translate-y-1 transition-all duration-300 cursor-pointer hover:border-indigo-300">
+                    <h4 class="text-slate-400 font-bold text-xs uppercase tracking-wider mb-4">Productivity Pulse</h4>
+                    <div class="w-24 h-24 rounded-3xl bg-slate-50 flex items-center justify-center border-2 border-dashed border-slate-200 group-hover:border-indigo-200 group-hover:bg-indigo-50 transition-colors">
+                        <span id="dash-today-grade" class="text-4xl font-black text-slate-300 transition-colors">-</span>
+                    </div>
+                    <p class="text-[11px] font-bold text-slate-400 mt-4"><span id="dash-today-updates" class="text-indigo-600">0</span> <span class="opacity-60">Daily Logs</span></p>
+                </div>
+
+                <div class="bg-indigo-600 p-6 rounded-3xl shadow-lg shadow-indigo-200 flex flex-col justify-between text-white group hover:shadow-xl hover:-translate-y-1 transition-all duration-300 overflow-hidden relative">
+                    <div class="absolute top-0 right-0 -mt-2 -mr-2 w-16 h-16 bg-white/10 rounded-full blur-xl"></div>
+                    <h4 class="text-indigo-200 font-bold text-xs uppercase tracking-wider mb-4 flex items-center gap-2"><i class="fa-solid fa-bolt-lightning"></i> Critical Deadlines</h4>
+                    <div class="space-y-4">
+                        <div class="flex justify-between items-center">
+                            <span class="text-[11px] font-bold uppercase tracking-tight opacity-70">Overdue Cases</span>
+                            <span class="text-2xl font-black text-white" id="dash-firm-overdue">0</span>
+                        </div>
+                        <div class="flex justify-between items-center border-t border-white/10 pt-3">
+                            <span class="text-[11px] font-bold uppercase tracking-tight opacity-70">Due Today</span>
+                            <span class="text-2xl font-black text-amber-300" id="dash-firm-today">0</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Top Priorities Section -->
+        <div class="lg:col-span-4">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-xs font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2">
+                    <span class="w-8 h-[1px] bg-slate-200"></span> Top Priorities
+                </h3>
+            </div>
+            <div id="dash-top-priorities" class="space-y-3 h-[calc(100%-2rem)]">
+                <!-- Priority items will be injected here -->
+                <div class="bg-white p-4 rounded-2xl border border-slate-100 flex items-center justify-center h-full">
+                    <p class="text-xs font-bold text-slate-400">Loading your urgent tasks...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <h3 class="text-xs font-black text-slate-400 uppercase tracking-[0.2em] mb-4 flex items-center gap-2">
+        <span class="w-8 h-[1px] bg-slate-200"></span> My Action Modules
+    </h3>
+
+    <div class="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-7 gap-3 sm:gap-4 w-full mb-12">
+        <div onclick="openFilteredModule('view-gst-center', 'gstAssignFilter')" class="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-indigo-100 hover:shadow-md hover:border-indigo-300 transition cursor-pointer flex flex-col items-center text-center group min-h-[148px]">
+            <div class="w-12 h-12 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center text-xl mb-3 group-hover:scale-110 transition-transform"><i class="fa-solid fa-file-invoice"></i></div>
+            <h3 class="text-3xl sm:text-4xl font-black text-slate-800 mb-1" id="tile-gst-count">0</h3>
+            <p class="text-xs font-bold text-slate-500 uppercase tracking-wider">GST Returns</p>
+        </div>
+
+        <div onclick="openFilteredModule('view-tds-center', 'tdsAssignFilter')" class="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-indigo-100 hover:shadow-md hover:border-indigo-300 transition cursor-pointer flex flex-col items-center text-center group min-h-[148px]">
+            <div class="w-12 h-12 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center text-xl mb-3 group-hover:scale-110 transition-transform"><i class="fa-solid fa-file-invoice"></i></div>
+            <h3 class="text-3xl sm:text-4xl font-black text-slate-800 mb-1" id="tile-tds-count">0</h3>
+            <p class="text-xs font-bold text-slate-500 uppercase tracking-wider">TDS Returns</p>
+        </div>
+
+        <div onclick="switchView('view-audits')" class="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-blue-100 hover:shadow-md hover:border-blue-300 transition cursor-pointer flex flex-col items-center text-center group min-h-[148px]">
+            <div class="w-12 h-12 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center text-xl mb-3 group-hover:scale-110 transition-transform"><i class="fa-solid fa-clipboard-check"></i></div>
+            <h3 class="text-3xl sm:text-4xl font-black text-slate-800 mb-1" id="tile-audit-count">0</h3>
+            <p class="text-xs font-bold text-slate-500 uppercase tracking-wider">Audits</p>
+        </div>
+        <div onclick="switchView('view-compliance')" class="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-emerald-100 hover:shadow-md hover:border-emerald-300 transition cursor-pointer flex flex-col items-center text-center group min-h-[148px]">
+            <div class="w-12 h-12 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center text-xl mb-3 group-hover:scale-110 transition-transform"><i class="fa-solid fa-calendar-check"></i></div>
+            <h3 class="text-3xl sm:text-4xl font-black text-slate-800 mb-1" id="tile-comp-count">0</h3>
+            <p class="text-xs font-bold text-slate-500 uppercase tracking-wider">Compliances</p>
+        </div>
+        <div onclick="switchView('view-custom-tasks')" class="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-amber-100 hover:shadow-md hover:border-amber-300 transition cursor-pointer flex flex-col items-center text-center group min-h-[148px]">
+            <div class="w-12 h-12 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center text-xl mb-3 group-hover:scale-110 transition-transform"><i class="fa-solid fa-list-check"></i></div>
+            <h3 class="text-3xl sm:text-4xl font-black text-slate-800 mb-1" id="tile-custom-count">0</h3>
+            <p class="text-xs font-bold text-slate-500 uppercase tracking-wider">Custom Tasks</p>
+        </div>
+        <div onclick="openFilteredModule('view-startups-subsidy', 'subsidyAssignFilter')" class="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-violet-100 hover:shadow-md hover:border-violet-300 transition cursor-pointer flex flex-col items-center text-center group min-h-[148px]">
+            <div class="w-12 h-12 rounded-full bg-violet-50 text-violet-600 flex items-center justify-center text-xl mb-3 group-hover:scale-110 transition-transform"><i class="fa-solid fa-rocket"></i></div>
+            <h3 class="text-3xl sm:text-4xl font-black text-slate-800 mb-1" id="tile-startup-count">0</h3>
+            <p class="text-xs font-bold text-slate-500 uppercase tracking-wider">Startup Cases</p>
+        </div>
+        <div onclick="openFilteredModule('view-debtors', 'debtorAssignFilter')" class="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-red-100 hover:shadow-md hover:border-red-300 transition cursor-pointer flex flex-col items-center text-center group min-h-[148px]">
+            <div class="w-12 h-12 rounded-full bg-red-50 text-red-600 flex items-center justify-center text-xl mb-3 group-hover:scale-110 transition-transform"><i class="fa-solid fa-indian-rupee-sign"></i></div>
+            <h3 class="text-3xl sm:text-4xl font-black text-slate-800 mb-1" id="tile-debtor-count">0</h3>
+            <p class="text-xs font-bold text-slate-500 uppercase tracking-wider">Debtor Recovery</p>
+        </div>
+
+    </div>
+</div>
+<div id="view-clients" class="hidden px-4 py-4 md:px-6 md:py-6 bg-slate-50/50 overflow-y-auto w-full h-full">
+    <!-- Header & Quick Actions -->
+    <div class="flex flex-col lg:flex-row justify-between items-start lg:items-center mb-4 gap-3 w-full">
+        <div class="flex items-center gap-3">
+            <div class="h-10 w-10 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-700 flex items-center justify-center text-white shadow-lg shadow-blue-100">
+                <i class="fa-solid fa-users text-sm"></i>
+            </div>
+            <div>
+                <h2 class="text-lg font-black text-slate-900 tracking-tight">Client Directory</h2>
+                <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Master CRM & Portfolio Management</p>
+            </div>
+        </div>
+        <div class="flex flex-wrap items-center gap-2 w-full lg:w-auto">
+            <div class="flex items-center bg-white border border-slate-200 rounded-lg p-0.5 shadow-sm">
+                <button onclick="downloadClientSample()" class="text-[10px] font-black text-slate-500 hover:text-blue-600 px-3 py-1.5 hover:bg-slate-50 rounded-md transition-all uppercase tracking-widest">
+                    <i class="fa-solid fa-file-excel mr-1"></i> Sample
+                </button>
+                <div class="w-px h-3 bg-slate-100 mx-0.5"></div>
+                <input type="file" id="clientExcelInput" accept=".xlsx, .xls" class="hidden" onchange="processClientExcel(event)">
+                <button onclick="document.getElementById('clientExcelInput').click()" class="text-[10px] font-black text-slate-500 hover:text-emerald-600 px-3 py-1.5 hover:bg-slate-50 rounded-md transition-all uppercase tracking-widest">
+                    <i class="fa-solid fa-cloud-arrow-up mr-1"></i> Import
+                </button>
+            </div>
+            <button onclick="openNewClient()" class="bg-slate-900 text-white px-5 py-2.5 rounded-xl text-xs font-black hover:bg-black transition-all shadow-lg shadow-slate-200 flex items-center gap-2 active:scale-95">
+                <i class="fa-solid fa-plus text-xs"></i>
+                Add New Client
+            </button>
+        </div>
+    </div>
+
+    <!-- Directory Stats -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4 w-full">
+        <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-100 flex justify-between items-center group hover:shadow-lg hover:shadow-blue-50 transition-all duration-500">
+            <div>
+                <p class="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-1">Total Managed</p>
+                <h3 class="text-xl font-black text-slate-800 tracking-tight" id="crm-stat-total">0</h3>
+                <p class="text-[10px] font-bold text-blue-600 mt-1">Active Entities</p>
+            </div>
+            <div class="h-9 w-9 rounded-lg bg-blue-50 text-blue-500 flex items-center justify-center text-lg group-hover:rotate-12 transition-transform shadow-inner">
+                <i class="fa-solid fa-address-book"></i>
+            </div>
+        </div>
+        <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-100 flex justify-between items-center group hover:shadow-lg hover:shadow-emerald-50 transition-all duration-500">
+            <div>
+                <p class="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-1">Enrolled Services</p>
+                <h3 class="text-xl font-black text-slate-800 tracking-tight" id="crm-stat-services">0</h3>
+                <p class="text-[10px] font-bold text-emerald-600 mt-1">Active Contracts</p>
+            </div>
+            <div class="h-9 w-9 rounded-lg bg-emerald-50 text-emerald-500 flex items-center justify-center text-lg group-hover:rotate-12 transition-transform shadow-inner">
+                <i class="fa-solid fa-handshake"></i>
+            </div>
+        </div>
+        <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-100 flex justify-between items-center group hover:shadow-lg hover:shadow-violet-50 transition-all duration-500">
+            <div>
+                <p class="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-1">New Onboarding</p>
+                <h3 class="text-xl font-black text-slate-800 tracking-tight" id="crm-stat-new">0</h3>
+                <p class="text-[10px] font-bold text-violet-600 mt-1">Past 30 Days</p>
+            </div>
+            <div class="h-9 w-9 rounded-lg bg-violet-50 text-violet-500 flex items-center justify-center text-lg group-hover:rotate-12 transition-transform shadow-inner">
+                <i class="fa-solid fa-user-plus"></i>
+            </div>
+        </div>
+    </div>
+
+    <!-- Table Container -->
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden w-full transition-all">
+        <div class="px-4 py-3 border-b border-slate-100 flex flex-col lg:flex-row justify-between items-center bg-white gap-3">
+            <div class="flex items-center gap-3">
+                <div class="h-8 w-1 bg-blue-600 rounded-full"></div>
+                <h3 class="font-black text-slate-800 text-sm tracking-tight flex items-center gap-2">
+                    Identity Records
+                    <span class="px-2 py-0.5 rounded-full bg-slate-100 text-[10px] font-black text-slate-500 uppercase">Directory</span>
+                </h3>
+            </div>
+            
+            <div class="flex flex-col sm:flex-row items-center gap-3 w-full lg:w-auto">
+                <div class="relative w-full sm:w-40">
+                    <select id="clientStatusFilter" onchange="filterClients()" class="w-full pl-3 pr-8 py-2 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-50 shadow-sm font-black text-[10px] text-slate-700 transition appearance-none cursor-pointer bg-slate-50/50">
+                        <option value="active">Active Leads</option>
+                        <option value="archived">Archived Records</option>
+                        <option value="all">Global List</option>
+                    </select>
+                    <i class="fa-solid fa-chevron-down absolute right-3 top-2.5 text-slate-400 text-[10px] pointer-events-none"></i>
+                </div>
+
+                <div class="relative w-full sm:w-64">
+                    <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-slate-400 text-xs"></i>
+                    <input type="text" id="clientSearchInput" onkeyup="filterClients()" placeholder="Search by name, PAN or GST..." class="w-full pl-9 pr-4 py-2 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-50 shadow-sm transition text-xs font-bold bg-slate-50/50">
+                </div>
+            </div>
+        </div>
+
+        <div class="overflow-x-auto overflow-y-hidden w-full px-4 pb-4">
+            <table class="w-full text-left border-separate border-spacing-y-3 table-fixed">
+                <thead class="bg-slate-50/50 text-[10px] font-black text-slate-400 uppercase tracking-[0.15em] border-b border-slate-100">
+                    <tr>
+                        <th class="px-3 py-3 w-[30%]">Client Identity</th>
+                        <th class="px-3 py-3 w-[30%]">
+                            <div class="flex items-center gap-2">
+                                Enrolled Services
+                                <select id="clientServiceFilter" onchange="filterClients()" class="bg-transparent font-black text-blue-600 outline-none cursor-pointer hover:underline uppercase text-[10px] tracking-tight">
+                                    <option value="">(All Types)</option>
+                                </select>
+                            </div>
+                        </th>
+                        <th class="px-3 py-3 w-[15%]">Identity Docs</th>
+                        <th class="px-3 py-3 w-[15%]">Entity Type</th>
+                        <th class="px-3 py-3 w-[10%] text-right">Action</th>
+                    </tr>
+                </thead>
+                <tbody id="client-table-body" class="divide-y divide-slate-50 text-xs"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+
+
+<div id="view-tasks" class="hidden px-4 py-4 md:px-6 md:py-6 bg-slate-50/50 overflow-y-auto w-full h-full os-scroll">
+    <div class="flex justify-between items-center mb-8 w-full">
+        <div>
+            <h2 class="text-2xl font-black text-slate-900 tracking-tight">Task Board</h2>
+            <p class="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Live workflow tracker</p>
+        </div>
+    </div>
+    <div class="flex flex-col lg:flex-row gap-5 items-start w-full">
+        <div class="flex-1 bg-white rounded-2xl border border-slate-100 shadow-sm min-h-[500px] overflow-hidden">
+            <div class="px-5 py-4 border-b border-slate-100 flex items-center gap-3">
+                <span class="w-2 h-2 rounded-full bg-amber-400 flex-shrink-0"></span>
+                <h3 class="font-black text-slate-700 text-xs uppercase tracking-widest">Pending</h3>
+            </div>
+            <div id="col-Pending" class="p-4 space-y-3"></div>
+        </div>
+        <div class="flex-1 bg-white rounded-2xl border border-slate-100 shadow-sm min-h-[500px] overflow-hidden">
+            <div class="px-5 py-4 border-b border-blue-50 flex items-center gap-3 bg-blue-50/50">
+                <span class="w-2 h-2 rounded-full bg-blue-500 flex-shrink-0"></span>
+                <h3 class="font-black text-blue-700 text-xs uppercase tracking-widest">In Progress</h3>
+            </div>
+            <div id="col-In Progress" class="p-4 space-y-3"></div>
+        </div>
+        <div class="flex-1 bg-white rounded-2xl border border-slate-100 shadow-sm min-h-[500px] overflow-hidden">
+            <div class="px-5 py-4 border-b border-violet-50 flex items-center gap-3 bg-violet-50/50">
+                <span class="w-2 h-2 rounded-full bg-violet-500 flex-shrink-0"></span>
+                <h3 class="font-black text-violet-700 text-xs uppercase tracking-widest">Under Review</h3>
+            </div>
+            <div id="col-Review" class="p-4 space-y-3"></div>
+        </div>
+        <div class="flex-1 bg-white rounded-2xl border border-slate-100 shadow-sm min-h-[500px] overflow-hidden">
+            <div class="px-5 py-4 border-b border-emerald-50 flex items-center gap-3 bg-emerald-50/50">
+                <span class="w-2 h-2 rounded-full bg-emerald-500 flex-shrink-0"></span>
+                <h3 class="font-black text-emerald-700 text-xs uppercase tracking-widest">Completed</h3>
+            </div>
+            <div id="col-Completed" class="p-4 space-y-3"></div>
+        </div>
+    </div>
+</div>
+
+<div id="view-startups-subsidy" class="hidden px-4 py-4 md:px-6 md:py-6 bg-slate-50/50 overflow-y-auto w-full h-full os-scroll">
+    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 w-full gap-6">
+        <div class="flex items-center gap-4">
+            <div class="h-12 w-12 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-white shadow-lg shadow-indigo-200">
+                <i class="fa-solid fa-rocket text-xl"></i>
+            </div>
+            <div>
+                <h2 class="text-2xl font-black text-slate-900 tracking-tight">Startups & Subsidy</h2>
+                <p class="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Special Enrollments Tracker</p>
+            </div>
+        </div>
+        <div class="flex flex-col sm:flex-row items-center gap-3 w-full sm:w-auto mt-2 sm:mt-0">
+            <div class="relative w-full sm:w-48 group">
+                <select id="subsidyAssignFilter" onchange="renderStartupsSubsidyTable()" class="w-full pl-4 pr-8 py-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-bold shadow-sm transition bg-white text-slate-700 cursor-pointer appearance-none hover:border-indigo-300">
+                    <option value="mine">My Cases</option>
+                    <option value="all">All Cases</option>
+                </select>
+                <i class="fa-solid fa-chevron-down absolute right-4 top-3.5 text-slate-400 text-xs pointer-events-none"></i>
+            </div>
+            <div class="relative w-full sm:w-48 group">
+                <select id="subsidySortFilter" onchange="renderStartupsSubsidyTable()" class="w-full pl-4 pr-8 py-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-bold shadow-sm transition bg-white text-slate-700 cursor-pointer appearance-none hover:border-indigo-300">
+                    <option value="name">Sort by Name</option>
+                    <option value="date">Sort by Follow-up</option>
+                </select>
+                <i class="fa-solid fa-chevron-down absolute right-4 top-3.5 text-slate-400 text-xs pointer-events-none"></i>
+            </div>
+            <div class="relative w-full sm:w-40 group">
+                <select id="subsidyStatusFilter" onchange="renderStartupsSubsidyTable()" class="w-full pl-4 pr-8 py-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-bold shadow-sm transition bg-white text-slate-700 cursor-pointer appearance-none hover:border-indigo-300">
+                    <option value="active">Active Cases</option>
+                    <option value="Pending">Pending</option>
+                    <option value="Approved">Approved (Archived)</option>
+                    <option value="Rejected">Rejected</option>
+                    <option value="all">All (incl. Archived)</option>
+                </select>
+                <i class="fa-solid fa-chevron-down absolute right-4 top-3.5 text-slate-400 text-xs pointer-events-none"></i>
+            </div>
+            <div class="relative w-full sm:w-48 group">
+                <select id="subsidyCategoryFilter" onchange="renderStartupsSubsidyTable()" class="w-full pl-4 pr-8 py-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-bold shadow-sm transition bg-white text-slate-700 cursor-pointer appearance-none hover:border-indigo-300">
+                    <option value="all">All Categories</option>
+                </select>
+                <i class="fa-solid fa-chevron-down absolute right-4 top-3.5 text-slate-400 text-xs pointer-events-none"></i>
+            </div>
+            <div class="relative w-full sm:w-64">
+                <i class="fa-solid fa-search absolute left-4 top-3.5 text-slate-400 text-sm"></i>
+                <input type="text" id="startupSubsidySearchInput" onkeyup="renderStartupsSubsidyTable()" placeholder="Search client..." class="w-full pl-10 pr-4 py-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm shadow-sm transition bg-white font-medium placeholder:text-slate-400">
+            </div>
+        </div>
+    </div>
+
+    <!-- SUMMARY CARDS -->
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+        <div class="bg-white p-4 rounded-xl border border-slate-100 shadow-sm flex items-center gap-4">
+            <div class="w-10 h-10 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center text-lg">
+                <i class="fa-solid fa-briefcase"></i>
+            </div>
+            <div>
+                <div class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total Cases</div>
+                <div id="subsidy-total-count" class="text-xl font-black text-slate-800">0</div>
+            </div>
+        </div>
+        <div class="bg-white p-4 rounded-xl border border-slate-100 shadow-sm flex items-center gap-4">
+            <div class="w-10 h-10 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center text-lg">
+                <i class="fa-solid fa-clock"></i>
+            </div>
+            <div>
+                <div class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Pending Tasks</div>
+                <div id="subsidy-pending-count" class="text-xl font-black text-slate-800">0</div>
+            </div>
+        </div>
+        <div class="bg-white p-4 rounded-xl border border-slate-100 shadow-sm flex items-center gap-4">
+            <div class="w-10 h-10 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center text-lg">
+                <i class="fa-solid fa-chart-line"></i>
+            </div>
+            <div>
+                <div class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Pulse Rating</div>
+                <div id="subsidy-pulse-grade" class="text-xl font-black text-emerald-600">A</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- TABLE LABELS FOR ALIGNMENT -->
+    <div class="sticky top-0 z-20 px-8 py-4 bg-slate-50/95 backdrop-blur-sm mb-4 hidden md:grid grid-cols-12 gap-4 text-xs font-black text-slate-400 uppercase tracking-widest border-b border-slate-200">
+        <div class="col-span-3">Subsidy Category</div>
+        <div class="col-span-1">Rate</div>
+        <div class="col-span-1">Received</div>
+        <div class="col-span-1">Docs</div>
+        <div class="col-span-2">Status</div>
+        <div class="col-span-1">Follow-up</div>
+        <div class="col-span-3 text-right">Remark</div>
+    </div>
+
+    <div id="startup-subsidy-cards-container" class="space-y-6 mb-20 w-full transition-all">
+        <div class="text-center py-10 text-slate-400">
+            <i class="fa-solid fa-spinner fa-spin text-2xl mb-2"></i><br>Loading Startup Cases...
+        </div>
+    </div>
+</div>
+
+<div id="startupSubsidyDrawer" class="hidden fixed inset-0 z-[105] bg-slate-900/40 backdrop-blur-sm flex justify-end">
+    <div class="bg-white w-full max-w-4xl h-full shadow-2xl flex flex-col animate-slide-in-right">
+        <!-- HEADER: FIXED AT TOP -->
+        <div class="px-8 py-6 border-b border-gray-100 bg-indigo-600 text-white flex justify-between items-center shadow-md">
+            <div>
+                <span id="startupSubsidyDrawerClientName" class="text-[10px] font-black text-indigo-200 uppercase tracking-[0.2em] block mb-1"></span>
+                <h3 id="startupSubsidyDrawerServiceName" class="text-2xl font-black tracking-tight">Subsidy Management</h3>
+            </div>
+            <button onclick="closeStartupSubsidyDrawer()" class="text-white/70 hover:text-white bg-white/10 hover:bg-white/20 rounded-2xl w-10 h-10 flex items-center justify-center transition-all">
+                <i class="fa-solid fa-xmark text-lg"></i>
+            </button>
+        </div>
+
+        <!-- SCROLLABLE BODY -->
+        <div class="flex-1 overflow-y-auto os-scroll bg-slate-50">
+            <!-- 1. FORM SECTION -->
+            <div class="p-8 border-b border-gray-100 bg-white grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div class="md:col-span-2">
+                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Subsidy Category</label>
+                    <select id="startupSubsidyTypeInput" onchange="handleSubsidyTypeChange(this.value)" class="w-full rounded-xl border border-slate-200 p-3.5 text-sm font-bold outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50 text-slate-700 shadow-sm transition-all"></select>
+                </div>
+                <div>
+                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Rate Fixed With Client</label>
+                    <div class="relative">
+                        <span class="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-xs">₹</span>
+                        <input type="text" id="startupSubsidyRateInput" placeholder="e.g., 25000" class="w-full rounded-xl border border-slate-200 pl-8 pr-4 py-3.5 text-sm font-bold outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50 shadow-sm transition-all">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Fees Received</label>
+                    <div class="relative">
+                        <span class="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-xs">₹</span>
+                        <input type="text" id="startupSubsidyFeesReceivedInput" placeholder="e.g., 10000" class="w-full rounded-xl border border-slate-200 pl-8 pr-4 py-3.5 text-sm font-bold outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50 shadow-sm transition-all">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Current Status</label>
+                    <select id="startupSubsidyStatusInput" class="w-full rounded-xl border border-slate-200 p-3.5 text-sm font-bold outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50 shadow-sm transition-all">
+                        <option value="Pending">Pending</option>
+                        <option value="Data Collection">Data Collection</option>
+                        <option value="In Process">In Process</option>
+                        <option value="Filed">Filed</option>
+                        <option value="Approved">Approved</option>
+                        <option value="On Hold">On Hold</option>
+                        <option value="Rejected">Rejected</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Next Follow-up Date</label>
+                    <input type="date" id="startupSubsidyFollowupInput" class="w-full rounded-xl border border-slate-200 p-3.5 text-sm font-bold outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50 shadow-sm transition-all">
+                </div>
+                <div class="md:col-span-2">
+                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Remark / Progress Update</label>
+                    <textarea id="startupSubsidyRemarkInput" rows="3" placeholder="Add today's update..." class="w-full rounded-xl border border-slate-200 p-4 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50 shadow-sm transition-all resize-none"></textarea>
+                </div>
+                <div class="md:col-span-2">
+                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Transfer This Subsidy Case To</label>
+                    <select id="startupSubsidyTransferUserSelect" class="w-full rounded-xl border border-slate-200 p-3.5 text-sm font-bold outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50 shadow-sm transition-all"></select>
+                </div>
+                <div class="md:col-span-2 flex justify-end gap-3 pt-2">
+                    <button id="deleteStartupSubsidyBtn" onclick="deleteStartupSubsidyCase()" class="px-6 py-3.5 rounded-xl font-black text-xs uppercase tracking-widest text-red-500 bg-red-50 hover:bg-red-100 transition-all">
+                        <i class="fa-solid fa-trash-can mr-2"></i> Delete Case
+                    </button>
+                    <button id="saveStartupSubsidyBtn" onclick="saveStartupSubsidyUpdate()" class="px-8 py-3.5 rounded-xl font-black text-xs uppercase tracking-widest text-white bg-indigo-600 hover:bg-indigo-700 shadow-lg shadow-indigo-200 transition-all">
+                        Save Update <i class="fa-solid fa-check ml-2"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- 2. CHECKLIST SECTION -->
+            <div class="p-8 border-b border-gray-100 bg-white">
+                <h4 class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6 flex justify-between items-center px-1">
+                    <span class="flex items-center gap-2"><i class="fa-solid fa-file-shield text-indigo-500"></i> Required Documents</span>
+                    <span id="subsidyChecklistProgress" class="bg-indigo-50 text-indigo-600 px-3 py-1 rounded-full text-[9px] font-black">0/0 Collected</span>
+                </h4>
+                <div id="startupSubsidyChecklistContainer" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <!-- Checklist items injected here -->
+                    <div class="md:col-span-2 text-center py-10 text-slate-300 italic text-xs bg-slate-50/50 rounded-3xl border border-dashed border-slate-200">
+                        No documents configured for this category.
+                    </div>
+                </div>
+            </div>
+
+            <!-- 3. HISTORY SECTION -->
+            <div class="p-8 bg-slate-50">
+                <h4 class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-6 px-1">
+                    <i class="fa-solid fa-clock-rotate-left mr-2"></i> Case Activity Timeline
+                </h4>
+                <div id="startupSubsidyHistoryTimeline" class="space-y-4">
+                    <!-- Timeline items injected here -->
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="view-audits" class="hidden px-4 py-4 md:px-6 md:py-6 bg-slate-50/50 overflow-y-auto w-full h-full os-scroll">
+    <div class="flex flex-col lg:flex-row justify-between items-start lg:items-center mb-8 w-full gap-6">
+        <div class="flex items-center gap-4">
+            <div class="h-12 w-12 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-white shadow-lg shadow-indigo-200">
+                <i class="fa-solid fa-list-check text-xl"></i>
+            </div>
+            <div>
+                <h2 class="text-2xl font-black text-slate-900 tracking-tight">Audit Status</h2>
+                <p class="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Assignment tracking</p>
+            </div>
+        </div>
+
+        <div class="flex flex-col sm:flex-row items-center gap-3 w-full lg:w-auto">
+            <div class="relative w-full sm:w-48 group">
+                <select id="auditAssignFilter" onchange="filterAudits()" class="w-full pl-4 pr-8 py-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-bold shadow-sm transition bg-white text-slate-700 cursor-pointer appearance-none hover:border-indigo-300">
+                    <option value="all">All Audits</option>
+                    <option value="mine">My Assignments</option>
+                </select>
+                <i class="fa-solid fa-chevron-down absolute right-4 top-3.5 text-slate-400 text-xs pointer-events-none"></i>
+            </div>
+            <div class="relative w-full sm:w-56 group">
+                <select id="auditServiceFilter" onchange="filterAudits()" class="w-full pl-4 pr-8 py-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-bold shadow-sm transition bg-white text-slate-700 cursor-pointer appearance-none hover:border-indigo-300"></select>
+                <i class="fa-solid fa-chevron-down absolute right-4 top-3.5 text-slate-400 text-xs pointer-events-none"></i>
+            </div>
+            <div class="relative w-full sm:w-48 group">
+                <select id="auditSortOrder" onchange="filterAudits()" class="w-full pl-4 pr-8 py-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-bold shadow-sm transition bg-white text-slate-700 cursor-pointer appearance-none hover:border-indigo-300">
+                    <option value="none">Default Sort</option>
+                    <option value="followup_asc">Followup Date (Asc)</option>
+                    <option value="followup_desc">Followup Date (Desc)</option>
+                </select>
+                <i class="fa-solid fa-arrow-down-wide-short absolute right-4 top-3.5 text-slate-400 text-xs pointer-events-none"></i>
+            </div>
+            <div class="relative w-full sm:w-64">
+                <i class="fa-solid fa-search absolute left-4 top-3.5 text-slate-400 text-sm"></i>
+                <input type="text" id="auditSearchInput" onkeyup="filterAudits()" placeholder="Search Client..." class="w-full pl-10 pr-4 py-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm shadow-sm transition bg-white font-medium placeholder:text-slate-400">
+            </div>
+        </div>
+    </div>
+    <div id="audit-list-container" class="space-y-4 w-full"></div>
+</div>
+
+<div id="view-custom-tasks" class="hidden px-4 py-4 md:px-6 md:py-6 bg-slate-50/50 overflow-y-auto w-full h-full os-scroll">
+    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 w-full gap-6">
+        <div class="flex items-center gap-4">
+            <div class="h-12 w-12 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-white shadow-lg shadow-indigo-200">
+                <i class="fa-solid fa-clipboard-list text-xl"></i>
+            </div>
+            <div>
+                <h2 class="text-2xl font-black text-slate-900 tracking-tight">Custom Tasks</h2>
+                <p class="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">One-off & ad-hoc jobs</p>
+            </div>
+        </div>
+        <button onclick="openCreateCustomTaskModal()" class="bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition flex items-center gap-2 whitespace-nowrap active:scale-95"><i class="fa-solid fa-plus"></i> Create Task</button>
+    </div>
+    <div id="custom-task-list-container" class="space-y-4 w-full"></div>
+</div>
+
+<div id="view-compliance" class="hidden px-4 py-4 md:px-6 md:py-6 bg-slate-50/50 overflow-y-auto w-full h-full os-scroll">
+    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 w-full gap-6">
+        <div class="flex items-center gap-4">
+            <div class="h-12 w-12 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-white shadow-lg shadow-indigo-200">
+                <i class="fa-solid fa-calendar-check text-xl"></i>
+            </div>
+            <div>
+                <h2 class="text-2xl font-black text-slate-900 tracking-tight">Compliance Manager</h2>
+                <p class="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Enrollments & Deadlines</p>
+            </div>
+        </div>
+        <button onclick="openComplianceBuilder()" class="bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition flex items-center gap-2 whitespace-nowrap active:scale-95"><i class="fa-solid fa-calendar-plus"></i> Manage Compliances</button>
+    </div>
+    
+    <div class="flex flex-col lg:flex-row gap-6 w-full mb-12">
+        <div class="w-full lg:w-1/2">
+            <div class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden flex flex-col h-full">
+                <div class="p-6 border-b border-slate-100 bg-slate-50 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
+                    <div>
+                        <h3 class="font-bold text-slate-800">Check Enrollments</h3>
+                        <p class="text-xs text-slate-500 mt-0.5">Select a service to view enrolled clients.</p>
+                    </div>
+                    <button onclick="generateManualTasksFromEnrollment(this)" class="text-sm bg-white text-indigo-600 border border-indigo-200 hover:bg-indigo-50 px-4 py-2 rounded-xl font-bold transition shadow-sm w-full sm:w-auto"><i class="fa-solid fa-bolt mr-1"></i> Push to Board</button>
+                </div>
+                <div class="p-5 border-b border-slate-100 bg-white">
+                    <select id="complianceFilterSelect" onchange="loadEnrolledClientsList()" class="w-full rounded-xl border border-slate-200 p-3 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50 cursor-pointer"></select>
+                </div>
+                <div class="px-5 py-3 bg-indigo-50/50 text-indigo-700 text-xs font-bold border-b border-indigo-100 uppercase tracking-widest"><span id="enrolled-count">0</span> Clients Enrolled</div>
+                <div class="flex-1 overflow-y-auto max-h-[500px] os-scroll"><table class="min-w-full"><tbody id="enrolled-clients-tbody"></tbody></table></div>
+            </div>
+        </div>
+        <div class="w-full lg:w-1/2">
+            <div class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden flex flex-col h-full">
+                <div class="p-6 border-b border-slate-100 bg-slate-50">
+                    <h3 class="font-bold text-slate-800 mb-1"><i class="fa-solid fa-bell text-amber-500 mr-2"></i> Active Reminders & Deadlines</h3>
+                    <p class="text-xs text-slate-500 mt-0.5">Deadlines currently within their "Remind Days Before" window.</p>
+                </div>
+                <div class="flex-1 overflow-y-auto p-5 bg-slate-50/50 space-y-3 max-h-[500px] os-scroll" id="active-reminders-list"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Page Visibility Settings Section -->
+    <div class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden mb-12">
+        <div class="p-6 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
+            <div>
+                <h3 class="font-bold text-slate-800 mb-1"><i class="fa-solid fa-file-lines text-indigo-500 mr-2"></i> Page Visibility Settings</h3>
+                <p class="text-xs text-slate-500 mt-0.5">Configure which clients appear on each page based on their enrolled services.</p>
+            </div>
+            <button onclick="savePageVisibilitySettings()" id="savePageVisBtn" class="bg-indigo-600 text-white px-4 py-2 rounded-xl font-bold hover:bg-indigo-700 transition flex items-center gap-2 text-sm shadow-sm">
+                <i class="fa-solid fa-check"></i> Save Settings
+            </button>
+        </div>
+        <div class="p-6">
+            <div class="overflow-x-auto">
+                <table class="min-w-full">
+                    <thead>
+                        <tr class="border-b border-slate-100 text-xs text-slate-400 font-bold uppercase tracking-wider">
+                            <th class="px-4 py-3 text-left">Page</th>
+                            <th class="px-4 py-3 text-left">Visible Enrolled Services</th>
+                        </tr>
+                    </thead>
+                    <tbody id="page-visibility-tbody">
+                        <tr><td colspan="2" class="text-center py-4 text-gray-500"><i class="fa-solid fa-spinner fa-spin mr-1"></i>Loading settings...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+<div id="view-billing" class="hidden px-4 py-4 md:px-6 md:py-6 bg-slate-50/50 overflow-y-auto w-full h-full os-scroll">
+    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 w-full gap-6">
+        <div class="flex items-center gap-4">
+            <div class="h-12 w-12 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-white shadow-lg shadow-indigo-200">
+                <i class="fa-solid fa-file-invoice-dollar text-xl"></i>
+            </div>
+            <div>
+                <h2 class="text-2xl font-black text-slate-900 tracking-tight">Billing & Invoices</h2>
+                <p class="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Financial Management</p>
+            </div>
+        </div>
+        <div class="flex items-center gap-4 w-full sm:w-auto">
+            <div class="relative w-full sm:w-72">
+                <i class="fa-solid fa-search absolute left-4 top-3.5 text-slate-400 text-sm"></i>
+                <input type="text" id="billSearchInput" onkeyup="filterBills()" placeholder="Search Bill No. or Client..." class="w-full pl-10 pr-4 py-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm shadow-sm transition bg-white font-medium placeholder:text-slate-400">
+            </div>
+            <div class="relative">
+                <select id="billStatusFilter" onchange="filterBills()" class="pl-4 pr-10 py-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm shadow-sm transition bg-white font-medium text-slate-600 appearance-none cursor-pointer">
+                    <option value="active" selected>Active Bills</option>
+                    <option value="cancelled">Cancelled (Archived)</option>
+                    <option value="all">All Bills</option>
+                </select>
+                <i class="fa-solid fa-chevron-down absolute right-4 top-4 text-slate-400 text-[10px] pointer-events-none"></i>
+            </div>
+            <div class="text-right hidden px-4 border-r border-slate-200">
+                <span class="text-xs font-black text-slate-400 uppercase tracking-widest block mb-0.5">Total Value</span>
+                <span id="total-unbilled" class="text-xl font-black text-indigo-600">&#8377;0</span>
+            </div>
+            <button onclick="exportBillingToCSV()" class="bg-green-600 text-white px-5 py-3 rounded-xl font-bold shadow-lg shadow-green-200 hover:bg-green-700 transition flex items-center gap-2 whitespace-nowrap active:scale-95"><i class="fa-solid fa-file-excel"></i> Export</button>
+            <button onclick="openCreateBillModal()" class="bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition flex items-center gap-2 whitespace-nowrap active:scale-95"><i class="fa-solid fa-file-invoice"></i> New Bill</button>
+        </div>
+    </div>
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden mb-12 w-full transition-all">
+        <div class="overflow-auto max-h-[600px] os-scroll">
+            <table class="min-w-full text-left text-sm border-collapse">
+                <thead class="bg-slate-50 border-b border-slate-100 sticky top-0 z-10">
+                    <tr>
+                        <th class="px-5 py-3 text-left w-32 sticky top-0 bg-slate-50 z-10">
+                            <div class="text-[10px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap mb-1.5">Bill No</div>
+                            <input type="text" id="filterBillNo" onkeyup="filterBills()" placeholder="Filter..." class="w-full px-2 py-1 text-xs border border-slate-200 rounded outline-none focus:border-indigo-500 font-medium placeholder:text-slate-300">
+                        </th>
+                        <th class="px-5 py-3 text-left min-w-[200px] sticky top-0 bg-slate-50 z-10">
+                            <div class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">Client Name</div>
+                            <input type="text" id="filterClientName" onkeyup="filterBills()" placeholder="Filter..." class="w-full px-2 py-1 text-xs border border-slate-200 rounded outline-none focus:border-indigo-500 font-medium placeholder:text-slate-300">
+                        </th>
+                        <th class="px-5 py-3 text-left sticky top-0 bg-slate-50 z-10">
+                            <div class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">Service Description</div>
+                            <input type="text" id="filterService" onkeyup="filterBills()" placeholder="Filter..." class="w-full px-2 py-1 text-xs border border-slate-200 rounded outline-none focus:border-indigo-500 font-medium placeholder:text-slate-300">
+                        </th>
+                        <th class="px-5 py-3 text-left w-48 sticky top-0 bg-slate-50 z-10">
+                            <div class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">Date Range</div>
+                            <div class="flex flex-col gap-1">
+                                <input type="date" id="filterStartDate" onchange="filterBills()" class="w-full px-2 py-1 text-xs border border-slate-200 rounded outline-none focus:border-indigo-500 font-medium placeholder:text-slate-300 text-slate-500">
+                                <input type="date" id="filterEndDate" onchange="filterBills()" class="w-full px-2 py-1 text-xs border border-slate-200 rounded outline-none focus:border-indigo-500 font-medium placeholder:text-slate-300 text-slate-500">
+                            </div>
+                        </th>
+                        <th class="px-5 py-3 text-left w-32 sticky top-0 bg-slate-50 z-10">
+                            <div class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5">Amount</div>
+                            <input type="text" id="filterAmount" onkeyup="filterBills()" placeholder="Filter..." class="w-full px-2 py-1 text-xs border border-slate-200 rounded outline-none focus:border-indigo-500 font-medium placeholder:text-slate-300">
+                        </th>
+                        <th class="px-5 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right whitespace-nowrap align-top sticky top-0 bg-slate-50 z-10">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="billing-table-body" class="divide-y divide-slate-50"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div id="view-settings" class="hidden px-4 py-4 md:px-6 md:py-6 bg-slate-50/50 overflow-y-auto w-full h-full os-scroll">
+    <div class="mb-10 w-full">
+        <h2 class="text-3xl font-black text-slate-900 tracking-tight">System Settings</h2>
+        <p class="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Configure your firm's operational identity & security</p>
+    </div>
+
+    <!-- Tabs Navigation -->
+    <div class="flex border-b border-slate-200 mb-8 gap-6 px-1">
+        <button onclick="switchSettingsTab('tab-security')" id="btn-tab-security" class="pb-3 text-sm font-black text-indigo-600 border-b-2 border-indigo-600 transition-all uppercase tracking-widest">Security</button>
+        <button onclick="switchSettingsTab('tab-financial')" id="btn-tab-financial" class="pb-3 text-sm font-black text-slate-400 border-b-2 border-transparent hover:text-slate-600 transition-all uppercase tracking-widest">Financial</button>
+        <button onclick="switchSettingsTab('tab-services')" id="btn-tab-services" class="pb-3 text-sm font-black text-slate-400 border-b-2 border-transparent hover:text-slate-600 transition-all uppercase tracking-widest">Services</button>
+        <button onclick="switchSettingsTab('tab-pages')" id="btn-tab-pages" class="pb-3 text-sm font-black text-slate-400 border-b-2 border-transparent hover:text-slate-600 transition-all uppercase tracking-widest">Pages</button>
+        <button onclick="switchSettingsTab('tab-pendencies')" id="btn-tab-pendencies" class="pb-3 text-sm font-black text-slate-400 border-b-2 border-transparent hover:text-slate-600 transition-all uppercase tracking-widest">Pendencies</button>
+        <button onclick="switchSettingsTab('tab-admin')" id="btn-tab-admin" class="pb-3 text-sm font-black text-slate-400 border-b-2 border-transparent hover:text-slate-600 transition-all uppercase tracking-widest hidden">Admin</button>
+    </div>
+
+    <!-- Tab Content: Security -->
+    <div id="tab-security" class="tab-content-settings space-y-6 max-w-4xl">
+        <h3 class="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2 px-1">
+            <span class="w-8 h-[1px] bg-slate-200"></span> Identity & Security
+        </h3>
+        <div class="bg-white rounded-3xl shadow-sm border border-slate-100 p-8 hover:shadow-xl transition-all duration-300">
+            <div class="flex items-center gap-4 mb-8">
+                <div class="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-xl shadow-inner">
+                    <i class="fa-solid fa-shield-halved"></i>
+                </div>
+                <div>
+                    <h4 class="font-black text-slate-800 tracking-tight">Security Access</h4>
+                    <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Update your login credentials</p>
+                </div>
+            </div>
+            
+            <div class="space-y-5 max-w-sm">
+                <div>
+                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">Current 4-Digit PIN</label>
+                    <input type="password" id="oldPin" maxlength="4" class="w-full rounded-2xl border border-slate-200 p-3.5 outline-none focus:ring-2 focus:ring-indigo-500 text-center tracking-[0.5em] text-2xl bg-slate-50 font-black shadow-inner transition-all">
+                </div>
+                <div>
+                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">New 4-Digit PIN</label>
+                    <input type="password" id="newPin" maxlength="4" class="w-full rounded-2xl border border-slate-200 p-3.5 outline-none focus:ring-2 focus:ring-indigo-500 text-center tracking-[0.5em] text-2xl bg-white font-black shadow-sm transition-all focus:border-indigo-300">
+                </div>
+                <button onclick="updatePin()" id="updatePinBtn" class="w-full bg-slate-900 text-white font-black py-4 rounded-2xl shadow-lg shadow-slate-200 hover:bg-black transition-all active:scale-95 mt-4 text-xs tracking-widest uppercase">
+                    Update Security PIN
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab Content: Pages -->
+    <div id="tab-pages" class="tab-content-settings hidden space-y-6 max-w-4xl">
+        <h3 class="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2 px-1">
+            <span class="w-8 h-[1px] bg-slate-200"></span> Page Configurations
+        </h3>
+        <div class="bg-white rounded-3xl shadow-sm border border-slate-100 p-8 hover:shadow-xl transition-all duration-300">
+            <div class="flex items-center gap-4 mb-8">
+                <div class="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-xl shadow-inner">
+                    <i class="fa-solid fa-file-lines"></i>
+                </div>
+                <div>
+                    <h4 class="font-black text-slate-800 tracking-tight">Page Data Management</h4>
+                    <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Download and upload page-specific assignments and rates</p>
+                </div>
+            </div>
+            
+            <div class="border border-slate-100 rounded-2xl overflow-hidden shadow-sm">
+                <table class="min-w-full text-left bg-white">
+                    <thead class="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                        <tr>
+                            <th class="px-5 py-4">Page Name</th>
+                            <th class="px-5 py-4 text-right">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="pages-list-tbody" class="divide-y divide-slate-50 text-xs font-bold text-slate-700">
+                        <!-- Pages injected here -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab Content: Financial -->
+    <div id="tab-financial" class="tab-content-settings hidden space-y-6 max-w-4xl">
+        <h3 class="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2 px-1">
+            <span class="w-8 h-[1px] bg-slate-200"></span> Financial Config
+        </h3>
+        <div class="bg-white rounded-3xl shadow-sm border border-slate-100 p-8 hover:shadow-xl transition-all duration-300">
+            <div class="flex items-center gap-4 mb-8">
+                <div class="w-12 h-12 rounded-2xl bg-violet-50 text-violet-600 flex items-center justify-center text-xl shadow-inner">
+                    <i class="fa-solid fa-building"></i>
+                </div>
+                <div>
+                    <h4 class="font-black text-slate-800 tracking-tight">Billing Firms</h4>
+                    <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Manage registered invoice entities</p>
+                </div>
+            </div>
+
+            <div class="bg-indigo-50/50 border border-indigo-100 rounded-3xl p-6 mb-8">
+                <h5 class="text-[10px] font-black text-indigo-800 uppercase tracking-widest mb-4">Add New Firm</h5>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+                    <input type="text" id="newFirmName" placeholder="Firm Name *" class="rounded-xl border border-white p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm placeholder:text-slate-400">
+                    <input type="text" id="newFirmGST" placeholder="GSTIN (Optional)" class="rounded-xl border border-white p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-indigo-500 uppercase shadow-sm placeholder:text-slate-400">
+                </div>
+                <button onclick="addBillingFirm()" id="addFirmBtn" class="w-full bg-indigo-600 text-white font-black py-3 rounded-xl shadow-md hover:bg-indigo-700 transition flex items-center justify-center gap-2 text-xs uppercase tracking-widest">
+                    <i class="fa-solid fa-plus"></i> Register Firm
+                </button>
+            </div>
+
+            <h5 class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4 px-1">Registered Firms</h5>
+            <div class="border border-slate-100 rounded-2xl overflow-hidden shadow-sm">
+                <table class="min-w-full text-left bg-white">
+                    <thead class="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                        <tr>
+                            <th class="px-5 py-4">Firm Name</th>
+                            <th class="px-5 py-4">GSTIN</th>
+                            <th class="px-5 py-4 text-right">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="billing-firms-list" class="divide-y divide-slate-50 text-xs font-bold text-slate-700"></tbody>
+                </table>
+            </div>
+
+            <div class="bg-blue-50/50 border border-blue-100 rounded-3xl p-6 mt-8 mb-4">
+                <h5 class="text-[10px] font-black text-blue-800 uppercase tracking-widest mb-4">Default Bulk Billing Firms</h5>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">GST Center Bulk Billing</label>
+                        <select id="defaultGstFirmSelect" onchange="saveDefaultFirm('gst', this.value)" class="w-full rounded-xl border border-white p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm text-slate-700 cursor-pointer">
+                            <option value="">-- No Default Firm --</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">TDS Center Bulk Billing</label>
+                        <select id="defaultTdsFirmSelect" onchange="saveDefaultFirm('tds', this.value)" class="w-full rounded-xl border border-white p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm text-slate-700 cursor-pointer">
+                            <option value="">-- No Default Firm --</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab Content: Services -->
+    <div id="tab-services" class="tab-content-settings hidden space-y-6 max-w-4xl">
+        <h3 class="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2 px-1">
+            <span class="w-8 h-[1px] bg-slate-200"></span> Service Utilities
+        </h3>
+        <div class="bg-white rounded-3xl shadow-sm border border-slate-100 p-8 hover:shadow-xl transition-all duration-300">
+            <div class="flex items-center gap-4 mb-8">
+                <div class="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center text-xl shadow-inner">
+                    <i class="fa-solid fa-rocket"></i>
+                </div>
+                <div>
+                    <h4 class="font-black text-slate-800 tracking-tight">Startups & Subsidy</h4>
+                    <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Configure specialized service trackers & checklists</p>
+                </div>
+            </div>
+
+            <div class="bg-indigo-50/50 border border-indigo-100 rounded-3xl p-6 mb-8">
+                <h5 class="text-[10px] font-black text-indigo-800 uppercase tracking-widest mb-4">Add New Category</h5>
+                <div class="flex gap-3 mb-4">
+                    <input type="text" id="newSubsidyCategoryName" placeholder="e.g. PMEGP, Startup India" class="flex-1 rounded-xl border border-white p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm placeholder:text-slate-400">
+                    <button onclick="addSubsidyCategory()" class="bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold shadow-md hover:bg-indigo-700 transition flex items-center gap-2 text-xs uppercase tracking-widest">
+                        <i class="fa-solid fa-plus"></i> Add
+                    </button>
+                </div>
+            </div>
+
+
+
+            <h5 class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4 px-1">Active Categories & Checklists</h5>
+            <div class="border border-slate-100 rounded-2xl overflow-hidden shadow-sm">
+                <table class="min-w-full text-left bg-white">
+                    <thead class="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                        <tr>
+                            <th class="px-5 py-4 w-1/2">Category Name</th>
+                            <th class="px-5 py-4">Checklist (Excel)</th>
+                            <th class="px-5 py-4 text-right">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="subsidy-categories-list" class="divide-y divide-slate-50 text-xs font-bold text-slate-700">
+                        <!-- Categories injected here -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab Content: Pendencies -->
+    <div id="tab-pendencies" class="tab-content-settings hidden space-y-6 max-w-4xl">
+        <h3 class="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2 px-1">
+            <span class="w-8 h-[1px] bg-slate-200"></span> Pendencies & Cleanup
+        </h3>
+        <div class="bg-white rounded-3xl shadow-sm border border-slate-100 p-8 hover:shadow-xl transition-all duration-300">
+            <div class="flex items-center gap-4 mb-8">
+                <div class="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center text-xl shadow-inner">
+                    <i class="fa-solid fa-triangle-exclamation"></i>
+                </div>
+                <div>
+                    <h4 class="font-black text-slate-800 tracking-tight">System & Client Pendencies</h4>
+                    <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Monitor missing alignments, unconfigured services, and clean records</p>
+                </div>
+            </div>
+
+            <!-- Missing Services Metric -->
+            <div class="bg-slate-50 border border-slate-100 rounded-3xl p-6 mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 hover:border-slate-200 transition-all">
+                <div class="flex-1">
+                    <h5 class="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5">Clients Without Enrolled Services</h5>
+                    <p class="text-xs text-slate-500 font-medium">Clients who have no compliance, audit, GST, or other services configured in their profile.</p>
+                </div>
+                <div class="flex items-center gap-3.5 self-end sm:self-auto">
+                    <span id="pendencyNoServicesCount" class="text-2xl font-black text-rose-600 bg-rose-50 border border-rose-100 px-4 py-1.5 rounded-2xl">0</span>
+                    <button onclick="showClientsNoServicesPopup()" class="text-xs font-black uppercase tracking-widest bg-slate-900 text-white px-4 py-3 rounded-xl hover:bg-black transition-all shadow-md active:scale-95 whitespace-nowrap">View List</button>
+                </div>
+            </div>
+
+            <!-- Unlinked Tally Metric -->
+            <div class="bg-slate-50 border border-slate-100 rounded-3xl p-6 mb-8 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 hover:border-slate-200 transition-all">
+                <div class="flex-1">
+                    <h5 class="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5">Clients Not Linked to Tally</h5>
+                    <p class="text-xs text-slate-500 font-medium">Clients who are not mapped to any ledger in the Tally integration for debtor recovery.</p>
+                </div>
+                <div class="flex items-center gap-3.5 self-end sm:self-auto">
+                    <span id="pendencyUnlinkedTallyCount" class="text-2xl font-black text-amber-600 bg-amber-50 border border-amber-100 px-4 py-1.5 rounded-2xl">0</span>
+                    <button onclick="showClientsUnlinkedTallyPopup()" class="text-xs font-black uppercase tracking-widest bg-slate-900 text-white px-4 py-3 rounded-xl hover:bg-black transition-all shadow-md active:scale-95 whitespace-nowrap">View List</button>
+                </div>
+            </div>
+
+            <!-- Client Deduplication Section -->
+            <div class="bg-amber-50/50 border border-amber-100 rounded-3xl p-6">
+                <h5 class="text-[10px] font-black text-amber-800 uppercase tracking-widest mb-4">Client Deduplication</h5>
+                <p class="text-xs text-slate-600 mb-4">Delete duplicate clients with the same PAN number. Clients with different GST numbers will be kept. If no GST is found and PAN is same, it will be deleted.</p>
+                <button onclick="deduplicateClients()" class="bg-amber-600 text-white px-6 py-3 rounded-xl font-bold shadow-md hover:bg-amber-700 transition flex items-center gap-2 text-xs uppercase tracking-widest">
+                    <i class="fa-solid fa-broom"></i> Clean Duplicate Clients
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab Content: Admin -->
+    <div id="tab-admin" class="tab-content-settings hidden space-y-6 max-w-4xl">
+        <h3 class="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2 px-1">
+            <span class="w-8 h-[1px] bg-slate-200"></span> Team Access Control
+        </h3>
+        <div class="bg-white rounded-3xl shadow-sm border border-slate-100 p-8 hover:shadow-xl transition-all duration-300">
+            <div class="mb-6">
+                <label class="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Select User</label>
+                <div id="adminUserDropdown"></div>
+            </div>
+
+            <div id="adminCheckboxes" class="space-y-4 mb-6"></div>
+
+            <div class="flex flex-col sm:flex-row gap-3">
+                <button id="savePermsBtn" onclick="saveUserPermissions()" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-4 rounded-xl font-bold transition shadow-md flex justify-center items-center gap-2">
+                    <i class="fa-solid fa-check"></i> Save Permissions
+                </button>
+                <button id="archiveUserBtn" onclick="toggleUserArchiveStatus()" class="flex-1 bg-amber-500 hover:bg-amber-600 text-white px-6 py-4 rounded-xl font-bold transition shadow-md flex justify-center items-center gap-2 hidden">
+                    <i class="fa-solid fa-box-archive"></i> <span id="archiveUserBtnText">Archive User</span>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="view-gst-center" class="hidden px-4 py-4 md:px-6 md:py-6 bg-slate-50/50 overflow-y-auto w-full h-full os-scroll">
+    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 w-full gap-6">
+        <div class="flex items-center gap-4">
+            <div class="h-12 w-12 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-white shadow-lg shadow-indigo-200">
+                <i class="fa-solid fa-file-invoice text-xl"></i>
+            </div>
+            <div>
+                <h2 class="text-2xl font-black text-slate-900 tracking-tight">GST Center</h2>
+                <p class="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Compliance & Filing</p>
+            </div>
+        </div>
+
+        <div class="flex flex-col sm:flex-row items-center gap-3 w-full sm:w-auto mt-2 sm:mt-0">
+            <div class="relative w-full sm:w-48 group">
+                <select id="gstAssignFilter" onchange="renderFilteredGSTTable()" class="w-full pl-4 pr-8 py-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-bold shadow-sm transition bg-white text-slate-700 cursor-pointer appearance-none hover:border-indigo-300">
+                    <option value="mine">My GST Clients</option>
+                    <option value="all">All GST Clients</option>
+                </select>
+                <i class="fa-solid fa-chevron-down absolute right-4 top-3.5 text-slate-400 text-xs pointer-events-none"></i>
+            </div>
+            <div class="relative w-full sm:w-48 group">
+                <select id="gstFrequencyFilter" onchange="renderFilteredGSTTable()" class="w-full pl-4 pr-8 py-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-bold shadow-sm transition bg-white text-slate-700 cursor-pointer appearance-none hover:border-indigo-300">
+                    <option value="all">All Frequencies</option>
+                    <option value="Monthly">Monthly Regular</option>
+                    <option value="Quarterly">Quarterly (QRMP)</option>
+                </select>
+                <i class="fa-solid fa-chevron-down absolute right-4 top-3.5 text-slate-400 text-xs pointer-events-none"></i>
+            </div>
+            <div class="relative w-full sm:w-48">
+                <i class="fa-regular fa-calendar absolute left-4 top-3.5 text-indigo-500"></i>
+                <select id="gstMonthFilter" onchange="loadGSTCenterData()" class="w-full pl-10 pr-4 py-3 border border-indigo-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-bold shadow-sm transition bg-indigo-50 cursor-pointer text-indigo-700 hover:bg-indigo-100 appearance-none"></select>
+                <i class="fa-solid fa-chevron-down absolute right-4 top-3.5 text-indigo-400 text-xs pointer-events-none"></i>
+            </div>
+            <div class="relative w-full sm:w-64">
+                <i class="fa-solid fa-search absolute left-4 top-3.5 text-slate-400 text-sm"></i>
+                <input type="text" id="gstSearchInput" onkeyup="renderFilteredGSTTable()" placeholder="Search client name..." class="w-full pl-10 pr-4 py-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm shadow-sm transition bg-white font-medium placeholder:text-slate-400">
+            </div>
+            <button onclick="loadGSTCenterData()" class="bg-white border border-slate-200 text-slate-600 w-11 h-11 rounded-xl shadow-sm hover:text-indigo-600 hover:border-indigo-300 transition flex items-center justify-center"><i class="fa-solid fa-rotate-right"></i></button>
+        </div>
+    </div>
+
+    <!-- SUMMARY CARDS -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <div class="bg-white p-4 rounded-xl border border-slate-100 shadow-sm flex items-center gap-4">
+            <div class="w-10 h-10 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center text-lg">
+                <i class="fa-solid fa-briefcase"></i>
+            </div>
+            <div>
+                <div class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total Cases</div>
+                <div id="gst-total-count" class="text-xl font-black text-slate-800">0</div>
+            </div>
+        </div>
+        <div class="bg-white p-4 rounded-xl border border-slate-100 shadow-sm flex items-center gap-4">
+            <div class="w-10 h-10 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center text-lg">
+                <i class="fa-solid fa-clock"></i>
+            </div>
+            <div>
+                <div class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Pending Data</div>
+                <div id="gst-pending-data-count" class="text-xl font-black text-slate-800">0</div>
+            </div>
+        </div>
+        <div class="bg-white p-4 rounded-xl border border-slate-100 shadow-sm flex items-center gap-4">
+            <div class="w-10 h-10 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center text-lg">
+                <i class="fa-solid fa-file-lines"></i>
+            </div>
+            <div>
+                <div class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Pending GST-1</div>
+                <div id="gst-pending-gst1-count" class="text-xl font-black text-slate-800">0</div>
+            </div>
+        </div>
+        <div class="bg-white p-4 rounded-xl border border-slate-100 shadow-sm flex items-center gap-4">
+            <div class="w-10 h-10 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center text-lg">
+                <i class="fa-solid fa-file-circle-check"></i>
+            </div>
+            <div>
+                <div class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Pending GST-3B</div>
+                <div id="gst-pending-gst3b-count" class="text-xl font-black text-slate-800">0</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden w-full mb-12">
+        <div class="overflow-auto max-h-[600px] os-scroll">
+            <table class="min-w-full text-left text-sm border-collapse">
+                <thead class="bg-gray-50 text-xs font-bold text-gray-500 uppercase tracking-wider border-b border-gray-200">
+                    <tr>
+                        <th class="px-2 py-2 text-center w-10 align-top text-gray-400 sticky top-0 bg-gray-50 z-10">#</th>
+                        <th class="px-3 py-2 min-w-[200px] align-top sticky top-0 bg-gray-50 z-10">
+                            <div class="cursor-pointer flex items-center gap-1 hover:text-indigo-600 mb-1.5 transition-colors" onclick="sortGstTable('display_name')">Client Name <i id="sort_icon_display_name" class="fa-solid fa-sort text-xs text-gray-300"></i></div>
+                            <div class="text-xs text-gray-400 font-normal italic mt-1 font-mono uppercase tracking-widest text-[9px]">Master Portfolio</div>
+                        </th>
+                        <th class="px-2 py-2 bg-indigo-50 text-center w-28 whitespace-nowrap border-r border-white align-top sticky top-0 z-10">
+                            <div class="cursor-pointer flex items-center justify-center gap-1 hover:text-indigo-600 mb-1.5 transition-colors" onclick="sortGstTable('gstr1_upto')">GSTR-1 Upto <i id="sort_icon_gstr1_upto" class="fa-solid fa-sort text-xs text-gray-300"></i></div>
+                            <select id="filter_gstr1_upto" onchange="renderFilteredGSTTable()" onclick="event.stopPropagation()" class="w-full text-xs p-1 border border-gray-200 rounded font-normal text-gray-600 outline-none cursor-pointer bg-white">
+                                <option value="all">All</option><option value="has">Filed Any</option><option value="none">Never Filed</option>
+                            </select>
+                        </th>
+                        <th class="px-2 py-2 bg-indigo-50 text-center w-28 whitespace-nowrap align-top border-r border-gray-100 sticky top-0 z-10">
+                            <div class="cursor-pointer flex items-center justify-center gap-1 hover:text-indigo-600 mb-1.5 transition-colors" onclick="sortGstTable('gstr3b_upto')">3B Upto <i id="sort_icon_gstr3b_upto" class="fa-solid fa-sort text-xs text-gray-300"></i></div>
+                            <select id="filter_gstr3b_upto" onchange="renderFilteredGSTTable()" onclick="event.stopPropagation()" class="w-full text-xs p-1 border border-gray-200 rounded font-normal text-gray-600 outline-none cursor-pointer bg-white">
+                                <option value="all">All</option><option value="has">Filed Any</option><option value="none">Never Filed</option>
+                            </select>
+                        </th>
+
+                        <th class="px-1 py-2 text-center border-l border-gray-100 w-20 align-top sticky top-0 bg-gray-50 z-10">
+                            <div class="cursor-pointer flex items-center justify-center gap-1 hover:text-indigo-600 mb-1.5 transition-colors" onclick="sortGstTable('is_call')">Call/WA <i id="sort_icon_is_call" class="fa-solid fa-sort text-xs text-gray-300"></i></div>
+                            <select id="filter_is_call" onchange="renderFilteredGSTTable()" onclick="event.stopPropagation()" class="w-full text-xs p-1 border border-gray-200 rounded font-normal text-gray-600 outline-none cursor-pointer bg-white">
+                                <option value="all">All</option><option value="done">Done</option><option value="pending">Pending</option>
+                            </select>
+                        </th>
+                        <th class="px-1 py-2 text-center border-l border-gray-100 w-20 align-top sticky top-0 bg-gray-50 z-10">
+                            <div class="cursor-pointer flex items-center justify-center gap-1 hover:text-indigo-600 mb-1.5 transition-colors" onclick="sortGstTable('is_data')">Data <i id="sort_icon_is_data" class="fa-solid fa-sort text-xs text-gray-300"></i></div>
+                            <select id="filter_is_data" onchange="renderFilteredGSTTable()" onclick="event.stopPropagation()" class="w-full text-xs p-1 border border-gray-200 rounded font-normal text-gray-600 outline-none cursor-pointer bg-white">
+                                <option value="all">All</option><option value="done">Done</option><option value="pending">Pending</option>
+                            </select>
+                        </th>
+                        <th class="px-1 py-2 text-center border-l border-gray-100 w-20 align-top sticky top-0 bg-gray-50 z-10">
+                            <div class="cursor-pointer flex items-center justify-center gap-1 hover:text-indigo-600 mb-1.5 transition-colors" onclick="sortGstTable('is_excel')">Excel <i id="sort_icon_is_excel" class="fa-solid fa-sort text-xs text-gray-300"></i></div>
+                            <select id="filter_is_excel" onchange="renderFilteredGSTTable()" onclick="event.stopPropagation()" class="w-full text-xs p-1 border border-gray-200 rounded font-normal text-gray-600 outline-none cursor-pointer bg-white">
+                                <option value="all">All</option><option value="done">Done</option><option value="pending">Pending</option>
+                            </select>
+                        </th>
+                        <th class="px-1 py-2 text-center border-l border-gray-100 w-20 bg-emerald-50 border-r border-white align-top sticky top-0 z-10">
+                            <div class="cursor-pointer flex items-center justify-center gap-1 hover:text-emerald-700 mb-1.5 transition-colors" onclick="sortGstTable('is_gstr1')">GSTR-1 <i id="sort_icon_is_gstr1" class="fa-solid fa-sort text-xs text-gray-300"></i></div>
+                            <select id="filter_is_gstr1" onchange="renderFilteredGSTTable()" onclick="event.stopPropagation()" class="w-full text-xs p-1 border border-emerald-200 rounded font-normal text-gray-600 outline-none cursor-pointer bg-white">
+                                <option value="all">All</option><option value="done">Done</option><option value="pending">Pending</option>
+                            </select>
+                        </th>
+                        <th class="px-1 py-2 text-center border-l border-gray-100 w-20 align-top sticky top-0 bg-gray-50 z-10">
+                            <div class="cursor-pointer flex items-center justify-center gap-1 hover:text-indigo-600 mb-1.5 transition-colors" onclick="sortGstTable('is_send_2b')">Send 2B <i id="sort_icon_is_send_2b" class="fa-solid fa-sort text-xs text-gray-300"></i></div>
+                            <select id="filter_is_send_2b" onchange="renderFilteredGSTTable()" onclick="event.stopPropagation()" class="w-full text-xs p-1 border border-gray-200 rounded font-normal text-gray-600 outline-none cursor-pointer bg-white">
+                                <option value="all">All</option><option value="done">Done</option><option value="pending">Pending</option>
+                            </select>
+                        </th>
+                        <th class="px-1 py-2 text-center border-l border-gray-100 w-20 align-top sticky top-0 bg-gray-50 z-10">
+                            <div class="cursor-pointer flex items-center justify-center gap-1 hover:text-indigo-600 mb-1.5 transition-colors" onclick="sortGstTable('is_2b')">2B Chk <i id="sort_icon_is_2b" class="fa-solid fa-sort text-xs text-gray-300"></i></div>
+                            <select id="filter_is_2b" onchange="renderFilteredGSTTable()" onclick="event.stopPropagation()" class="w-full text-xs p-1 border border-gray-200 rounded font-normal text-gray-600 outline-none cursor-pointer bg-white">
+                                <option value="all">All</option><option value="done">Done</option><option value="pending">Pending</option>
+                            </select>
+                        </th>
+                        <th class="px-1 py-2 text-center border-l border-gray-100 w-20 bg-emerald-50 align-top sticky top-0 z-10">
+                            <div class="cursor-pointer flex items-center justify-center gap-1 hover:text-emerald-700 mb-1.5 transition-colors" onclick="sortGstTable('is_gstr3b')">GSTR-3B <i id="sort_icon_is_gstr3b" class="fa-solid fa-sort text-xs text-gray-300"></i></div>
+                            <select id="filter_is_gstr3b" onchange="renderFilteredGSTTable()" onclick="event.stopPropagation()" class="w-full text-xs p-1 border border-emerald-200 rounded font-normal text-gray-600 outline-none cursor-pointer bg-white">
+                                <option value="all">All</option><option value="done">Done</option><option value="pending">Pending</option>
+                            </select>
+                        </th>
+                        <th class="px-1 py-2 text-center border-l border-gray-100 w-20 align-top sticky top-0 bg-gray-50 z-10">
+                            <div class="cursor-pointer flex items-center justify-center gap-1 hover:text-indigo-600 mb-1 transition-colors" onclick="sortGstTable('is_bill_prepared')">Bill <i id="sort_icon_is_bill_prepared" class="fa-solid fa-sort text-xs text-gray-300"></i></div>
+                            <button onclick="openBulkBillModal()" class="w-full text-[10px] p-0.5 bg-indigo-50 text-indigo-600 border border-indigo-200 rounded hover:bg-indigo-600 hover:text-white transition mb-1 font-bold">Bulk Bill</button>
+                            <select id="filter_is_bill_prepared" onchange="renderFilteredGSTTable()" onclick="event.stopPropagation()" class="w-full text-xs p-1 border border-gray-200 rounded font-normal text-gray-600 outline-none cursor-pointer bg-white">
+                                <option value="all">All</option><option value="done">Billed</option><option value="pending">Unbilled</option>
+                            </select>
+                        </th>
+                        <th class="px-2 py-2 text-left border-l border-gray-100 align-top sticky top-0 bg-gray-50 z-10">
+                            <div class="cursor-pointer flex items-center gap-1 hover:text-indigo-600 mb-1.5 transition-colors" onclick="sortGstTable('remark')">Remarks <i id="sort_icon_remark" class="fa-solid fa-sort text-xs text-gray-300"></i></div>
+                            <select id="filter_remark" onchange="renderFilteredGSTTable()" onclick="event.stopPropagation()" class="w-full text-xs p-1 border border-gray-200 rounded font-normal text-gray-600 outline-none cursor-pointer bg-white">
+                                <option value="all">All Remarks</option><option value="has">Has Remark</option><option value="none">No Remark</option>
+                            </select>
+                        </th>
+                    </tr>
+                </thead>
+                <tbody id="gst-table-body" class="divide-y divide-gray-100"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div id="view-tds-center" class="hidden px-4 py-4 md:px-6 md:py-6 bg-slate-50/50 overflow-y-auto w-full h-full os-scroll">
+    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 w-full gap-6">
+        <div class="flex items-center gap-4">
+            <div class="h-12 w-12 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-white shadow-lg shadow-indigo-200">
+                <i class="fa-solid fa-file-invoice text-xl"></i>
+            </div>
+            <div>
+                <h2 class="text-2xl font-black text-slate-900 tracking-tight">TDS Returns</h2>
+                <p class="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Compliance & Filing</p>
+            </div>
+        </div>
+
+        <div class="flex flex-col sm:flex-row items-center gap-3 w-full sm:w-auto mt-2 sm:mt-0">
+            <div class="relative w-full sm:w-48 group">
+                <select id="tdsAssignFilter" onchange="renderFilteredTDSTable()" class="w-full pl-4 pr-8 py-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-bold shadow-sm transition bg-white text-slate-700 cursor-pointer appearance-none hover:border-indigo-300">
+                    <option value="mine">My TDS Clients</option>
+                    <option value="all">All TDS Clients</option>
+                </select>
+                <i class="fa-solid fa-chevron-down absolute right-4 top-3.5 text-slate-400 text-xs pointer-events-none"></i>
+            </div>
+            <div class="relative w-full sm:w-56">
+                <i class="fa-regular fa-calendar absolute left-4 top-3.5 text-indigo-500"></i>
+                <select id="tdsQuarterFilter" onchange="loadTDSCenterData()" class="w-full pl-10 pr-4 py-3 border border-indigo-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm font-bold shadow-sm transition bg-indigo-50 cursor-pointer text-indigo-700 hover:bg-indigo-100 appearance-none"></select>
+                <i class="fa-solid fa-chevron-down absolute right-4 top-3.5 text-indigo-400 text-xs pointer-events-none"></i>
+            </div>
+            <div class="relative w-full sm:w-64">
+                <i class="fa-solid fa-search absolute left-4 top-3.5 text-slate-400 text-sm"></i>
+                <input type="text" id="tdsSearchInput" onkeyup="renderFilteredTDSTable()" placeholder="Search client name..." class="w-full pl-10 pr-4 py-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-indigo-500 text-sm shadow-sm transition bg-white font-medium placeholder:text-slate-400">
+            </div>
+            <button onclick="loadTDSCenterData()" class="bg-white border border-slate-200 text-slate-600 w-11 h-11 rounded-xl shadow-sm hover:text-indigo-600 hover:border-indigo-300 transition flex items-center justify-center"><i class="fa-solid fa-rotate-right"></i></button>
+        </div>
+    </div>
+
+    <!-- SUMMARY CARDS -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+        <div class="bg-white p-4 rounded-xl border border-slate-100 shadow-sm flex items-center gap-4">
+            <div class="w-10 h-10 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center text-lg">
+                <i class="fa-solid fa-briefcase"></i>
+            </div>
+            <div>
+                <div class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total Cases</div>
+                <div id="tds-total-count" class="text-xl font-black text-slate-800">0</div>
+            </div>
+        </div>
+        <div class="bg-white p-4 rounded-xl border border-slate-100 shadow-sm flex items-center gap-4">
+            <div class="w-10 h-10 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center text-lg">
+                <i class="fa-solid fa-clock"></i>
+            </div>
+            <div>
+                <div class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Filing Pending</div>
+                <div id="tds-filing-pending-count" class="text-xl font-black text-slate-800">0</div>
+            </div>
+        </div>
+        <div class="bg-white p-4 rounded-xl border border-slate-100 shadow-sm flex items-center gap-4">
+            <div class="w-10 h-10 rounded-lg bg-rose-50 text-rose-600 flex items-center justify-center text-lg">
+                <i class="fa-solid fa-file-lines"></i>
+            </div>
+            <div>
+                <div class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Form 16 Pending</div>
+                <div id="tds-form16-pending-count" class="text-xl font-black text-slate-800">0</div>
+            </div>
+        </div>
+        <div class="bg-white p-4 rounded-xl border border-slate-100 shadow-sm flex items-center gap-4">
+            <div class="w-10 h-10 rounded-lg bg-violet-50 text-violet-600 flex items-center justify-center text-lg">
+                <i class="fa-solid fa-file-invoice-dollar"></i>
+            </div>
+            <div>
+                <div class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Bill Pending</div>
+                <div id="tds-bill-pending-count" class="text-xl font-black text-slate-800">0</div>
+            </div>
+        </div>
+        <div class="bg-white p-4 rounded-xl border border-slate-100 shadow-sm flex items-center gap-4">
+            <div class="w-10 h-10 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center text-lg">
+                <i class="fa-solid fa-chart-line"></i>
+            </div>
+            <div>
+                <div class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Score</div>
+                <div id="tds-score" class="text-xl font-black text-emerald-600">0%</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden w-full mb-12">
+        <div class="overflow-auto max-h-[600px] os-scroll">
+            <table class="min-w-full text-left text-sm border-collapse">
+                <thead class="bg-gray-50 text-xs font-bold text-gray-500 uppercase tracking-wider border-b border-gray-200">
+                    <tr>
+                        <th class="px-2 py-2 text-center w-10 align-top text-gray-400 sticky top-0 bg-gray-50 z-10">#</th>
+                        <th class="px-3 py-2 min-w-[200px] align-top sticky top-0 bg-gray-50 z-10">Client Name</th>
+                        <th class="px-2 py-2 text-center w-28 align-top border-l border-gray-100 sticky top-0 bg-gray-50 z-10">
+                            <div class="mb-1.5">Month 1 Chalan</div>
+                            <select id="filter_m1_tds" onchange="renderFilteredTDSTable()" onclick="event.stopPropagation()" class="w-full text-xs p-1 border border-gray-200 rounded font-normal text-gray-600 outline-none cursor-pointer bg-white">
+                                <option value="all">All</option>
+                                <option value="Done">Done</option>
+                                <option value="NIL">NIL</option>
+                                <option value="Pending">Pending</option>
+                            </select>
+                        </th>
+                        <th class="px-2 py-2 text-center w-28 align-top border-l border-gray-100 sticky top-0 bg-gray-50 z-10">
+                            <div class="mb-1.5">Month 2 Chalan</div>
+                            <select id="filter_m2_tds" onchange="renderFilteredTDSTable()" onclick="event.stopPropagation()" class="w-full text-xs p-1 border border-gray-200 rounded font-normal text-gray-600 outline-none cursor-pointer bg-white">
+                                <option value="all">All</option>
+                                <option value="Done">Done</option>
+                                <option value="NIL">NIL</option>
+                                <option value="Pending">Pending</option>
+                            </select>
+                        </th>
+                        <th class="px-2 py-2 text-center w-28 align-top border-l border-gray-100 sticky top-0 bg-gray-50 z-10">
+                            <div class="mb-1.5">Month 3 Chalan</div>
+                            <select id="filter_m3_tds" onchange="renderFilteredTDSTable()" onclick="event.stopPropagation()" class="w-full text-xs p-1 border border-gray-200 rounded font-normal text-gray-600 outline-none cursor-pointer bg-white">
+                                <option value="all">All</option>
+                                <option value="Done">Done</option>
+                                <option value="NIL">NIL</option>
+                                <option value="Pending">Pending</option>
+                            </select>
+                        </th>
+                        <th class="px-2 py-2 text-center w-28 align-top border-l border-gray-100 sticky top-0 bg-gray-50 z-10">
+                            <div class="mb-1.5">Return Filed</div>
+                            <select id="filter_return_tds" onchange="renderFilteredTDSTable()" onclick="event.stopPropagation()" class="w-full text-xs p-1 border border-gray-200 rounded font-normal text-gray-600 outline-none cursor-pointer bg-white">
+                                <option value="all">All</option>
+                                <option value="Done">Done</option>
+                                <option value="NIL">NIL</option>
+                                <option value="Pending">Pending</option>
+                            </select>
+                        </th>
+                        <th class="px-2 py-2 text-center w-28 align-top border-l border-gray-100 sticky top-0 bg-gray-50 z-10">
+                            <div class="mb-1.5">Form 16</div>
+                            <select id="filter_form16_tds" onchange="renderFilteredTDSTable()" onclick="event.stopPropagation()" class="w-full text-xs p-1 border border-gray-200 rounded font-normal text-gray-600 outline-none cursor-pointer bg-white">
+                                <option value="all">All</option>
+                                <option value="Done">Done</option>
+                                <option value="NIL">NIL</option>
+                                <option value="Pending">Pending</option>
+                            </select>
+                        </th>
+                        <th class="px-2 py-2 text-center w-28 align-top border-l border-gray-100 sticky top-0 bg-gray-50 z-10">
+                            <div class="mb-1">Billed</div>
+                            <button onclick="openTDSBulkBillModal()" class="w-full text-[10px] p-0.5 bg-indigo-50 text-indigo-600 border border-indigo-200 rounded hover:bg-indigo-600 hover:text-white transition mb-1 font-bold">Bulk Bill</button>
+                            <select id="filter_billed_tds" onchange="renderFilteredTDSTable()" onclick="event.stopPropagation()" class="w-full text-xs p-1 border border-gray-200 rounded font-normal text-gray-600 outline-none cursor-pointer bg-white">
+                                <option value="all">All</option>
+                                <option value="Done">Done</option>
+                                <option value="NIL">NIL</option>
+                                <option value="Pending">Pending</option>
+                            </select>
+                        </th>
+                        <th class="px-2 py-2 text-left border-l border-gray-100 align-top sticky top-0 bg-gray-50 z-10">
+                            <div class="cursor-pointer flex items-center gap-1 hover:text-indigo-600 mb-1.5 transition-colors" onclick="sortTdsTable('remark')">Comment <i id="sort_icon_remark_tds" class="fa-solid fa-sort text-xs text-gray-300"></i></div>
+                            <select id="filter_remark_tds" onchange="renderFilteredTDSTable()" onclick="event.stopPropagation()" class="w-full text-xs p-1 border border-gray-200 rounded font-normal text-gray-600 outline-none cursor-pointer bg-white">
+                                <option value="all">All</option><option value="has">Has Comment</option><option value="none">No Comment</option>
+                            </select>
+                        </th>
+                    </tr>
+                </thead>
+                <tbody id="tds-table-body" class="divide-y divide-gray-100"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div id="bulkBillModal" class="hidden fixed inset-0 z-[100] bg-gray-900 bg-opacity-60 flex justify-center items-center transition-opacity">
+    <div class="bg-white w-full max-w-2xl max-h-[80vh] shadow-2xl flex flex-col rounded-xl overflow-hidden">
+        <div class="px-6 py-5 border-b border-gray-200 bg-indigo-600 text-white flex justify-between items-center">
+            <div>
+                <h3 class="text-xl font-bold text-white">Bulk Billing Confirmation</h3>
+                <p id="bulkBillModalPeriod" class="text-xs text-indigo-200 mt-1">Period: </p>
+            </div>
+            <button onclick="closeBulkBillModal()" class="text-indigo-200 hover:text-white bg-indigo-700 rounded-full w-8 h-8 flex items-center justify-center transition shadow-sm">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+        </div>
+
+        <div class="flex-1 overflow-y-auto p-6 bg-slate-50">
+            <table class="w-full text-sm text-left text-gray-500">
+                <thead class="text-xs text-gray-700 uppercase bg-gray-100">
+                    <tr>
+                        <th class="px-4 py-3">Client Name</th>
+                        <th class="px-4 py-3 text-right">Rate</th>
+                    </tr>
+                </thead>
+                <tbody id="bulkBillModalTableBody">
+                    <!-- Rows will be inserted here -->
+                </tbody>
+            </table>
+        </div>
+
+        <div class="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-between items-center">
+            <div>
+                <span class="text-sm text-gray-600">Total Clients: <span id="bulkBillModalTotalClients" class="font-bold">0</span></span>
+                <span class="mx-2 text-gray-300">|</span>
+                <span class="text-sm text-gray-600">Total Amount: <span id="bulkBillModalTotalAmount" class="font-bold">₹0</span></span>
+            </div>
+            <div class="flex gap-3">
+                <button onclick="closeBulkBillModal()" class="px-4 py-2 bg-white border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition text-sm font-medium">Cancel</button>
+                <button onclick="generateBulkBills()" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition text-sm font-medium shadow-sm">Confirm & Generate</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="gstTaskDrawer" class="hidden fixed inset-0 z-[100] bg-gray-900 bg-opacity-60 flex justify-end transition-opacity">
+    <div class="bg-white w-full max-w-md h-full shadow-2xl flex flex-col animate-slide-in-right">
+        <div class="px-6 py-5 border-b border-gray-200 bg-indigo-600 text-white flex justify-between items-center">
+            <div>
+                <span id="gstDrawerTaskName" class="text-xs font-bold text-indigo-200 uppercase tracking-wider mb-1 block">Task Type</span>
+                <h3 id="gstDrawerClientName" class="text-xl font-bold text-white">Client Name</h3>
+            </div>
+            <button onclick="closeGSTDrawer()" class="text-indigo-200 hover:text-white bg-indigo-700 rounded-full w-8 h-8 flex items-center justify-center transition shadow-sm">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+        </div>
+
+        <input type="hidden" id="gstDrawerClientId">
+        <input type="hidden" id="gstDrawerPeriod">
+        <input type="hidden" id="gstDrawerColumn">
+
+        <div class="flex-1 overflow-y-auto p-6 bg-slate-50 flex flex-col">
+            <h4 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-4"><i class="fa-solid fa-clock-rotate-left mr-1"></i> Task History</h4>
+            <div id="gstDrawerHistoryTimeline" class="flex-1 overflow-y-auto pr-2 space-y-4 mb-6 min-h-[120px]"></div>
+
+            <div id="gstDrawerFilingDateDiv" class="hidden mb-4 bg-emerald-50 p-4 rounded-xl border border-emerald-100 shadow-sm flex-shrink-0">
+                <label id="gstDrawerFilingDateLabel" class="block text-xs font-bold text-emerald-700 uppercase tracking-wider mb-2"><i class="fa-solid fa-calendar-day mr-1"></i> Date of Filing *</label>
+                <input type="date" id="gstDrawerFilingDate" class="w-full rounded-lg border border-emerald-200 p-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500 bg-white">
+            </div>
+            
+            <div id="gstDrawerNilReturnDiv" class="hidden mb-4 bg-blue-50 p-4 rounded-xl border border-blue-100 shadow-sm flex-shrink-0">
+                <label class="flex items-center gap-3 cursor-pointer group">
+                    <input type="checkbox" id="gstDrawerNilReturn" class="w-5 h-5 rounded border-blue-300 text-blue-600 focus:ring-blue-500 transition cursor-pointer">
+                    <div class="flex flex-col">
+                        <span class="text-sm font-bold text-blue-700">NIL Return</span>
+                        <span class="text-[10px] text-blue-500 font-medium uppercase tracking-wider">Mark this task as a NIL transaction</span>
+                    </div>
+                </label>
+            </div>
+
+            <div class="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex-shrink-0">
+                <label class="block text-xs font-bold text-indigo-600 uppercase tracking-wider mb-2"><i class="fa-solid fa-pen mr-1"></i> Add Remark</label>
+                <textarea id="gstDrawerNote" rows="3" class="w-full rounded-lg border border-gray-300 p-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500 resize-none bg-gray-50 shadow-inner" placeholder="E.g., Client sent data via WhatsApp..."></textarea>
+            </div>
+            <div class="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex-shrink-0 mt-4">
+                <label class="block text-xs font-bold text-indigo-600 uppercase tracking-wider mb-2"><i class="fa-solid fa-right-left mr-1"></i> Transfer GST Workflow To</label>
+                <select id="gstTransferUserSelect" class="w-full rounded-lg border border-gray-300 p-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500 bg-white"></select>
+            </div>
+            <div class="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex-shrink-0 mt-4">
+                <label class="block text-xs font-bold text-indigo-600 uppercase tracking-wider mb-2"><i class="fa-solid fa-clock mr-1"></i> GST Filing Frequency</label>
+                <select id="gstDrawerFrequencySelect" onchange="saveGstFrequencyFromDrawer()" class="w-full rounded-lg border border-gray-300 p-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500 bg-white">
+                    <option value="Monthly">Monthly Regular</option>
+                    <option value="Quarterly">Quarterly (QRMP)</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="p-6 border-t border-gray-200 bg-white flex flex-col sm:flex-row gap-3 flex-shrink-0">
+            <button id="saveNoteOnlyBtn" onclick="saveGSTNoteOnly()" class="flex-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 px-4 py-3 rounded-xl font-bold transition shadow-sm flex justify-center items-center gap-2">
+                <i class="fa-solid fa-thumbtack"></i> Record Remark
+            </button>
+            <button id="saveGstTaskBtn" onclick="saveGSTTask()" class="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-3 rounded-xl font-bold transition shadow-md flex justify-center items-center gap-2">
+                <i class="fa-solid fa-check-double"></i> Mark Completed
+            </button>
+        </div>
+    </div>
+</div>
+
+<div id="tdsTaskDrawer" class="hidden fixed inset-0 z-[100] bg-gray-900 bg-opacity-60 flex justify-end transition-opacity">
+    <div class="bg-white w-full max-w-md h-full shadow-2xl flex flex-col animate-slide-in-right">
+        <div class="px-6 py-5 border-b border-gray-200 bg-indigo-600 text-white flex justify-between items-center">
+            <div>
+                <span id="tdsDrawerTaskName" class="text-xs font-bold text-indigo-200 uppercase tracking-wider mb-1 block">Task Type</span>
+                <h3 id="tdsDrawerClientName" class="text-xl font-bold text-white">Client Name</h3>
+            </div>
+            <button onclick="closeTDSDrawer()" class="text-indigo-200 hover:text-white bg-indigo-700 rounded-full w-8 h-8 flex items-center justify-center transition shadow-sm">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+        </div>
+
+        <input type="hidden" id="tdsDrawerClientId">
+        <input type="hidden" id="tdsDrawerPeriod">
+        <input type="hidden" id="tdsDrawerColumn">
+
+        <div class="flex-1 overflow-y-auto p-6 bg-slate-50 flex flex-col">
+            <h4 class="text-xs font-bold text-gray-500 uppercase tracking-wider mb-4"><i class="fa-solid fa-clock-rotate-left mr-1"></i> Task History</h4>
+            <div id="tdsDrawerHistoryTimeline" class="flex-1 overflow-y-auto pr-2 space-y-4 mb-6"></div>
+
+            <div id="tdsDrawerNilReturnDiv" class="hidden mb-4 bg-blue-50 p-4 rounded-xl border border-blue-100 shadow-sm flex-shrink-0">
+                <label class="flex items-center gap-3 cursor-pointer group">
+                    <input type="checkbox" id="tdsDrawerNilReturn" class="w-5 h-5 rounded border-blue-300 text-blue-600 focus:ring-blue-500 transition cursor-pointer">
+                    <div class="flex flex-col">
+                        <span class="text-sm font-bold text-blue-700">NIL Return</span>
+                        <span class="text-[10px] text-blue-500 font-medium uppercase tracking-wider">Mark this task as a NIL transaction</span>
+                    </div>
+                </label>
+            </div>
+
+            <div class="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex-shrink-0">
+                <label class="block text-xs font-bold text-indigo-600 uppercase tracking-wider mb-2"><i class="fa-solid fa-pen mr-1"></i> Add Remark</label>
+                <textarea id="tdsDrawerNote" rows="3" class="w-full rounded-lg border border-gray-300 p-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500 resize-none bg-gray-50 shadow-inner" placeholder="E.g., Client sent data via WhatsApp..."></textarea>
+            </div>
+            <div class="bg-white p-4 rounded-xl border border-gray-200 shadow-sm flex-shrink-0 mt-4">
+                <label class="block text-xs font-bold text-indigo-600 uppercase tracking-wider mb-2"><i class="fa-solid fa-right-left mr-1"></i> Transfer TDS Workflow To</label>
+                <select id="tdsTransferUserSelect" class="w-full rounded-lg border border-gray-300 p-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500 bg-white"></select>
+            </div>
+        </div>
+
+        <div class="p-6 border-t border-gray-200 bg-white flex flex-col sm:flex-row gap-3 flex-shrink-0">
+            <button id="saveTdsNoteOnlyBtn" onclick="saveTDSNoteOnly()" class="flex-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 px-4 py-3 rounded-xl font-bold transition shadow-sm flex justify-center items-center gap-2">
+                <i class="fa-solid fa-thumbtack"></i> Record Remark
+            </button>
+            <button id="saveTdsTaskBtn" onclick="saveTDSTask()" class="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-3 rounded-xl font-bold transition shadow-md flex justify-center items-center gap-2">
+                <i class="fa-solid fa-check-double"></i> Mark Completed
+            </button>
+        </div>
+    </div>
+</div>
+
+<div id="teamAllocationDrawer" class="hidden fixed inset-0 z-[110] bg-slate-900/40 backdrop-blur-sm flex justify-end transition-all duration-300">
+    <div class="bg-white/95 backdrop-blur-2xl w-full max-w-md h-full shadow-[0_0_60px_-15px_rgba(0,0,0,0.3)] flex flex-col animate-slide-in-right rounded-l-[2rem] overflow-hidden border-l border-white/40">
+
+        <div class="px-8 py-6 bg-gradient-to-br from-slate-800 to-slate-900 text-white flex justify-between items-start relative overflow-hidden">
+            <div class="absolute top-0 right-0 w-32 h-32 bg-white opacity-5 rounded-full -mr-10 -mt-10 blur-xl"></div>
+            <div class="relative z-10">
+                <span class="text-xs font-bold text-slate-300 uppercase tracking-widest mb-1.5 block"><i class="fa-solid fa-sitemap mr-1"></i> Portfolio Assignment</span>
+                <h3 id="allocationClientName" class="text-2xl font-black text-white leading-tight line-clamp-1">Client Name</h3>
+            </div>
+            <button onclick="closeTeamAllocation()" class="text-slate-300 hover:text-white hover:bg-white/10 rounded-full w-10 h-10 flex items-center justify-center transition-all relative z-10">
+                <i class="fa-solid fa-xmark text-xl"></i>
+            </button>
+        </div>
+
+        <input type="hidden" id="allocationClientId">
+
+        <div class="flex-1 overflow-y-auto p-6 bg-slate-50/50 flex flex-col gap-4 custom-scrollbar">
+            <div class="bg-indigo-50 border border-indigo-100 rounded-xl p-4 flex gap-3 items-start shadow-sm mb-2">
+                <i class="fa-solid fa-circle-info text-indigo-500 mt-0.5"></i>
+                <p class="text-xs text-indigo-800 leading-relaxed font-medium">Assign specific services to your team. This controls what shows up on their Dashboards and tracking pages.</p>
+            </div>
+
+            <div id="allocationServicesList" class="space-y-4"></div>
+        </div>
+    </div>
+</div>
+<div id="addSubsidyTypeModal" class="hidden fixed inset-0 z-[120] bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-white w-full max-w-md rounded-3xl shadow-2xl animate-scale-in overflow-hidden">
+        <div class="px-8 py-6 bg-indigo-600 text-white flex justify-between items-center shadow-lg">
+            <h3 class="text-xl font-black tracking-tight">Add Subsidy Type</h3>
+            <button onclick="closeAddSubsidyTypeModal()" class="text-white/60 hover:text-white transition-all bg-white/10 hover:bg-white/20 w-8 h-8 rounded-full flex items-center justify-center"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="p-8 space-y-6">
+            <div>
+                <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2.5">Choose Category</label>
+                <select id="newSubsidyCategoryDropdown" onchange="handleNewSubsidyDropdownChange(this.value)" class="w-full rounded-xl border border-slate-200 p-4 text-sm font-bold outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50 text-slate-700 transition-all"></select>
+            </div>
+            <div id="otherSubsidyInputContainer" class="hidden animate-slide-down">
+                <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2.5 text-indigo-600">Custom Subsidy Name</label>
+                <input type="text" id="newSubsidyCustomName" placeholder="Enter custom subsidy name..." class="w-full rounded-xl border border-indigo-100 p-4 text-sm font-bold outline-none focus:ring-2 focus:ring-indigo-500 bg-indigo-50/50 text-slate-700 shadow-inner">
+            </div>
+        </div>
+        <div class="p-8 bg-slate-50 flex justify-end gap-4 border-t border-slate-100">
+            <button onclick="closeAddSubsidyTypeModal()" class="px-6 py-3 text-xs font-black uppercase tracking-widest text-slate-400 hover:text-slate-600 transition-all">Cancel</button>
+            <button onclick="saveNewSubsidyType()" class="bg-indigo-600 text-white px-10 py-4 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-indigo-700 shadow-xl shadow-indigo-100 transition-all active:scale-95">Add to Client</button>
+        </div>
+    </div>
+</div>
+
+<div id="firmSettingsModal" class="hidden fixed inset-0 z-[110] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center">
+    <div class="bg-white w-full max-w-lg rounded-2xl shadow-2xl flex flex-col animate-scale-in max-h-[90vh]">
+        <div class="px-6 py-4 border-b border-gray-100 flex justify-between items-center shrink-0">
+            <h3 class="text-lg font-black text-slate-800">Firm Invoice Settings</h3>
+            <button onclick="closeFirmSettingsModal()" class="text-slate-400 hover:text-slate-600">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+        </div>
+        <div class="p-6 space-y-4 overflow-y-auto">
+            <input type="hidden" id="settingsFirmId">
+            <div>
+                <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Firm Name</label>
+                <input type="text" id="settingsFirmName" class="w-full rounded-xl border border-slate-200 p-3 text-sm font-bold bg-slate-50" readonly>
+            </div>
+            <div>
+                <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Firm Logo</label>
+                <div class="flex items-center gap-4">
+                    <div id="settingsFirmLogoPreviewContainer" class="hidden w-16 h-16 rounded-lg border border-slate-200 flex items-center justify-center overflow-hidden bg-slate-50 shrink-0">
+                        <img id="settingsFirmLogoPreview" src="" class="max-w-full max-h-full object-contain">
+                    </div>
+                    <div class="flex-1">
+                        <input type="file" id="settingsFirmLogoInput" accept="image/*" class="w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition" onchange="handleLogoUpload(event)">
+                        <input type="hidden" id="settingsFirmLogoBase64">
+                    </div>
+                    <button id="settingsFirmLogoRemoveBtn" onclick="removeFirmLogo()" class="hidden text-red-500 hover:text-red-700 p-2"><i class="fa-solid fa-trash"></i></button>
+                </div>
+            </div>
+            <div>
+                <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Payment QR Code</label>
+                <div class="flex items-center gap-4">
+                    <div id="settingsFirmQrPreviewContainer" class="hidden w-16 h-16 rounded-lg border border-slate-200 flex items-center justify-center overflow-hidden bg-slate-50 shrink-0">
+                        <img id="settingsFirmQrPreview" src="" class="max-w-full max-h-full object-contain">
+                    </div>
+                    <div class="flex-1">
+                        <input type="file" id="settingsFirmQrInput" accept="image/*" class="w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-bold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition" onchange="handleQrUpload(event)">
+                        <input type="hidden" id="settingsFirmQrBase64">
+                    </div>
+                    <button id="settingsFirmQrRemoveBtn" onclick="removeFirmQr()" class="hidden text-red-500 hover:text-red-700 p-2"><i class="fa-solid fa-trash"></i></button>
+                </div>
+            </div>
+            <div>
+                <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">GSTIN</label>
+                <div class="flex items-center gap-3">
+                    <input type="text" id="settingsFirmGST" class="flex-1 rounded-xl border border-slate-200 p-3 text-sm font-bold uppercase transition-colors">
+                    <label class="flex items-center gap-2 cursor-pointer bg-slate-50 border border-slate-200 px-3 py-3 rounded-xl whitespace-nowrap">
+                        <input type="checkbox" id="settingsFirmNoGST" onchange="toggleFirmGstInput(this)" class="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer">
+                        <span class="text-xs font-bold text-slate-600">No GST Number</span>
+                    </label>
+                </div>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Email (Optional)</label>
+                    <input type="email" id="settingsFirmEmail" class="w-full rounded-xl border border-slate-200 p-3 text-sm font-medium">
+                </div>
+                <div>
+                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Contact Number</label>
+                    <input type="text" id="settingsFirmPhone" class="w-full rounded-xl border border-slate-200 p-3 text-sm font-medium">
+                </div>
+            </div>
+            <div>
+                <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Address</label>
+                <textarea id="settingsFirmAddress" rows="2" class="w-full rounded-xl border border-slate-200 p-3 text-sm font-medium"></textarea>
+            </div>
+            <div>
+                <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Bank Details</label>
+                <textarea id="settingsFirmBankDetails" rows="2" class="w-full rounded-xl border border-slate-200 p-3 text-sm font-medium" placeholder="Bank Name, A/C No, IFSC..."></textarea>
+            </div>
+            <div>
+                <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Terms & Conditions</label>
+                <textarea id="settingsFirmNotes" rows="2" class="w-full rounded-xl border border-slate-200 p-3 text-sm font-medium" placeholder="1. Make all cheques payable..."></textarea>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Bill Prefix</label>
+                    <input type="text" id="settingsFirmBillPrefix" class="w-full rounded-xl border border-slate-200 p-3 text-sm font-bold uppercase" placeholder="e.g. MS">
+                </div>
+                <div>
+                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Starting Bill Number</label>
+                    <input type="number" id="settingsFirmStartBillNo" class="w-full rounded-xl border border-slate-200 p-3 text-sm font-bold" placeholder="e.g. 101">
+                </div>
+            </div>
+        </div>
+        <div class="px-6 py-4 border-t border-gray-100 flex justify-end gap-3 shrink-0 bg-white rounded-b-2xl">
+            <button onclick="closeFirmSettingsModal()" class="px-4 py-2 rounded-xl text-slate-600 hover:bg-slate-50 font-bold text-sm">Cancel</button>
+            <button onclick="saveFirmSettings()" class="px-4 py-2 bg-indigo-600 text-white rounded-xl font-bold text-sm hover:bg-indigo-700">Save Settings</button>
+        </div>
+    </div>
+</div>
+
+<div id="pulseExplanationModal" class="hidden fixed inset-0 z-[130] bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden border border-slate-100 flex flex-col max-h-[85vh]">
+        <!-- Header -->
+        <div class="bg-gradient-to-br from-indigo-500 to-indigo-600 p-6 text-white flex justify-between items-center shrink-0">
+            <div>
+                <h3 class="text-lg font-black tracking-tight flex items-center gap-2">
+                    <i class="fa-solid fa-heart-pulse animate-pulse"></i> Productivity Pulse Breakdown
+                </h3>
+                <p class="text-xs text-indigo-100 font-bold uppercase tracking-wider mt-1">Real-time daily activity tracking & grading</p>
+            </div>
+            <button onclick="closePulseExplanationModal()" class="text-indigo-100 hover:text-white bg-indigo-700/50 hover:bg-indigo-700 rounded-full w-8 h-8 flex items-center justify-center transition shadow-sm">
+                <i class="fa-solid fa-xmark text-lg"></i>
+            </button>
+        </div>
+        
+        <!-- Content -->
+        <div class="p-6 space-y-6 overflow-y-auto flex-1 text-slate-700">
+            <!-- Calculation & Formula Box -->
+            <div class="bg-slate-50 border border-slate-200/60 rounded-2xl p-5">
+                <h4 class="text-xs font-black text-slate-400 uppercase tracking-widest mb-3">How it is Calculated</h4>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-center">
+                    <div class="bg-white p-3 rounded-xl border border-slate-100">
+                        <span class="text-2xl font-black text-slate-800" id="pulse-modal-total">0</span>
+                        <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">Pending Assignments</p>
+                    </div>
+                    <div class="bg-white p-3 rounded-xl border border-slate-100">
+                        <span class="text-2xl font-black text-indigo-600" id="pulse-modal-updated">0</span>
+                        <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">Updated Today</p>
+                    </div>
+                    <div class="bg-white p-3 rounded-xl border border-slate-100">
+                        <span class="text-2xl font-black text-emerald-500" id="pulse-modal-coverage">0%</span>
+                        <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-1">Today's Coverage</p>
+                    </div>
+                </div>
+                <div class="mt-4 pt-3 border-t border-slate-200/50 flex justify-between items-center text-xs font-bold text-slate-500">
+                    <span>Formula: (Updated Today / Pending) &times; 100</span>
+                    <span class="bg-indigo-50 text-indigo-700 px-2.5 py-1 rounded-lg">Grade: <span id="pulse-modal-grade" class="font-black">Z</span></span>
+                </div>
+            </div>
+
+            <!-- Grade Guide -->
+            <div class="border border-slate-100 rounded-2xl p-4 bg-slate-50/40">
+                <h4 class="text-xs font-black text-slate-400 uppercase tracking-widest mb-2.5">Grading Rubric</h4>
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-bold">
+                    <div class="p-2.5 rounded-xl border bg-emerald-50 text-emerald-700 border-emerald-100 flex flex-col items-center">
+                        <span class="text-lg font-black">A+</span>
+                        <span class="text-[9px] uppercase mt-0.5">&ge; 80% Coverage</span>
+                    </div>
+                    <div class="p-2.5 rounded-xl border bg-emerald-50/60 text-emerald-700/80 border-emerald-100/60 flex flex-col items-center">
+                        <span class="text-lg font-black">A</span>
+                        <span class="text-[9px] uppercase mt-0.5">&ge; 50% Coverage</span>
+                    </div>
+                    <div class="p-2.5 rounded-xl border bg-blue-50 text-blue-700 border-blue-100 flex flex-col items-center">
+                        <span class="text-lg font-black">B</span>
+                        <span class="text-[9px] uppercase mt-0.5">At Least 1 Log</span>
+                    </div>
+                    <div class="p-2.5 rounded-xl border bg-slate-50 text-slate-400 border-slate-100 flex flex-col items-center">
+                        <span class="text-lg font-black">Z</span>
+                        <span class="text-[9px] uppercase mt-0.5">0 Logs Today</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Detailed Lists -->
+            <div class="space-y-4">
+                <div>
+                    <h4 class="text-xs font-black text-slate-500 uppercase tracking-widest mb-2 flex items-center justify-between">
+                        <span>Pending Assignments List (<span id="pulse-modal-pending-cnt">0</span>)</span>
+                        <span class="text-[10px] font-normal text-slate-400 uppercase tracking-normal">These require updates/follow-ups</span>
+                    </h4>
+                    <div id="pulse-modal-pending-list" class="space-y-2 max-h-[160px] overflow-y-auto pr-1 border border-slate-100 rounded-xl p-3 bg-white">
+                        <!-- Pending items injected here -->
+                    </div>
+                </div>
+
+                <div>
+                    <h4 class="text-xs font-black text-emerald-600 uppercase tracking-widest mb-2 flex items-center justify-between">
+                        <span>Completed Updates Today (<span id="pulse-modal-updated-cnt">0</span>)</span>
+                        <span class="text-[10px] font-normal text-slate-400 uppercase tracking-normal">Updates logged since 12:00 AM</span>
+                    </h4>
+                    <div id="pulse-modal-updated-list" class="space-y-2 max-h-[160px] overflow-y-auto pr-1 border border-slate-100 rounded-xl p-3 bg-white">
+                        <!-- Updated items injected here -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Reusable Pendency List Popup Modal -->
+<div id="pendencyListModal" class="hidden fixed inset-0 z-[120] bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-white w-full max-w-2xl rounded-3xl shadow-2xl animate-scale-in overflow-hidden flex flex-col max-h-[85vh]">
+        <div class="px-8 py-6 bg-rose-600 text-white flex justify-between items-center shadow-lg shrink-0">
+            <h3 id="pendencyModalTitle" class="text-xl font-black tracking-tight font-sans">Pendency List</h3>
+            <button onclick="closePendencyListModal()" class="text-white/60 hover:text-white transition-all bg-white/10 hover:bg-white/20 w-8 h-8 rounded-full flex items-center justify-center"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="p-6 overflow-y-auto flex-1 bg-slate-50/50">
+            <div class="border border-slate-100 rounded-2xl overflow-hidden shadow-sm bg-white">
+                <table class="min-w-full text-left">
+                    <thead class="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100">
+                        <tr>
+                            <th class="px-6 py-4 w-1/12 text-center">#</th>
+                            <th class="px-6 py-4 w-6/12">Client Name</th>
+                            <th class="px-6 py-4 w-3/12">Entity Type</th>
+                            <th class="px-6 py-4 w-2/12 text-right">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="pendencyModalTableBody" class="divide-y divide-slate-100 text-xs font-bold text-slate-700">
+                        <!-- Items injected here -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="p-6 bg-slate-50 flex justify-end border-t border-slate-100 shrink-0">
+            <button onclick="closePendencyListModal()" class="bg-slate-900 text-white px-8 py-3.5 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-black transition-all active:scale-95 shadow-md">Close</button>
+        </div>
+    </div>
+</div>

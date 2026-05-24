@@ -1,0 +1,800 @@
+<script>
+    // ==========================================
+    // MODULE: AUDITS & CUSTOM TASKS
+    // ==========================================
+
+    let globalAuditsList = [];
+    let currentActiveClient = null; // Used for the Client Audit Board
+    let activeTask = null;          // Universal for Task Board & Custom Tasks
+    // --- SHARED UTILS (Moved to Core) ---
+
+    // ==========================================
+    // TASK BOARD LOGIC (Generic & Custom Tasks)
+    // ==========================================
+    async function loadTasksData() {
+        ['col-Pending', 'col-In Progress', 'col-Review', 'col-Completed'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.innerHTML = '';
+        });
+        
+        const todayStart = new Date();
+        todayStart.setHours(0,0,0,0);
+        
+        // Parallel fetch of tasks and today's acknowledgements
+        const [tasksRes, ackLogsRes] = await Promise.all([
+            supabaseClient.from('tasks').select(`*, clients(client_id, display_name), services(service_type, standard_fee)`).eq('assigned_to', currentUser.id),
+            supabaseClient.from('task_logs').select('task_id').eq('user_id', currentUser.id).gte('timestamp', todayStart.toISOString()).ilike('note', '%[Acknowledged Today]%')
+        ]);
+        
+        const ackMap = {};
+        if (ackLogsRes.data) {
+            ackLogsRes.data.forEach(l => {
+                if (l.task_id) ackMap[l.task_id] = true;
+            });
+        }
+
+        if (tasksRes.data) {
+            tasksRes.data.forEach(task => {
+                const clientName = task.clients ? task.clients.display_name : 'Unknown Client';
+                const taskName = task.is_custom ? task.custom_task_name : (task.services?.service_type || 'Task');
+                
+                let isOverdue = false;
+                let dateBadgeClass = "bg-blue-50 text-blue-600 border border-blue-100";
+                if (task.due_date) {
+                    const dDate = new Date(task.due_date.split('T')[0]); dDate.setHours(0,0,0,0);
+                    const today = new Date(); today.setHours(0,0,0,0);
+                    if (dDate < today) {
+                        isOverdue = true;
+                        dateBadgeClass = "bg-red-50 text-red-600 border border-red-100 animate-pulse";
+                    } else if (dDate.getTime() === today.getTime()) {
+                        dateBadgeClass = "bg-amber-50 text-amber-600 border border-amber-100";
+                    }
+                }
+                
+                const dueDateBadge = task.due_date ? `<div class="text-[10px] font-bold ${dateBadgeClass} px-2 py-0.5 rounded uppercase mt-2 w-max"><i class="fa-regular fa-clock"></i> Due: ${new Date(task.due_date).toLocaleDateString('en-IN', {month:'short', day:'numeric'})}</div>` : '';
+                
+                const isAcked = !!ackMap[task.task_id];
+                let ackCheckboxHtml = '';
+                if (!isOverdue && task.status !== 'Completed') {
+                    if (isAcked) {
+                        ackCheckboxHtml = `
+                            <div onclick="event.stopPropagation()" class="flex items-center gap-1 mt-2 text-[10px] text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-100 font-bold uppercase tracking-wider w-max shadow-sm" title="Acknowledged today">
+                                <i class="fa-solid fa-square-check text-xs"></i> Checked
+                            </div>
+                        `;
+                    } else {
+                        const safeId = task.task_id !== undefined ? task.task_id : task.id;
+                        ackCheckboxHtml = `
+                            <button onclick="acknowledgeTaskToday('${safeId}', event)" class="flex items-center gap-1 mt-2 text-[10px] text-indigo-600 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition font-bold uppercase tracking-wider shadow-sm w-max" title="Acknowledge today">
+                                <i class="fa-regular fa-square text-xs"></i> Acknowledge
+                            </button>
+                        `;
+                    }
+                }
+                
+                // NEW: Clicking a task card now opens the universal Task Drawer
+                const cardHtml = `
+                    <div onclick='openTaskDrawer(${JSON.stringify(task).replace(/'/g, "&#39;")})' class="bg-white p-4 rounded-lg shadow-sm border border-gray-200 cursor-pointer hover:border-indigo-400 hover:shadow-md transition mb-3">
+                        <div class="text-xs font-bold text-indigo-600 mb-1 uppercase tracking-wider">${taskName}</div>
+                        <div class="font-bold text-gray-800 text-sm mb-2 hover:text-indigo-600 hover:underline" onclick="event.stopPropagation(); openUniversalClientProfile('${task.client_id}')">${clientName}</div>
+                        <div class="flex flex-wrap items-center gap-2">
+                            ${dueDateBadge}
+                            ${ackCheckboxHtml}
+                        </div>
+                    </div>`;
+                const col = document.getElementById(`col-${task.status}`);
+                if (col) col.innerHTML += cardHtml;
+            });
+        }
+    }
+
+    // ==========================================
+    // AUDIT STATUS BOARD LOGIC (Client-Centric)
+    // ==========================================
+    function populateAuditFilters() {
+        const filterSelect = document.getElementById('auditServiceFilter');
+        if (!filterSelect) return;
+        filterSelect.innerHTML = '<option value="">All Audit Services</option>';
+        const auditServices = globalServicesList.filter(s => s.is_audit);
+        auditServices.forEach(s => {
+            filterSelect.innerHTML += `<option value="${s.service_type}">${s.service_type}</option>`;
+        });
+    }
+
+    async function loadAuditsData() {
+        const container = document.getElementById('audit-list-container');
+        container.innerHTML = '<div class="text-center p-8 text-gray-500"><i class="fa-solid fa-spinner fa-spin text-2xl mb-2"></i><br>Loading active audits...</div>';
+        
+        // Refresh cache to ensure we have the absolute latest client tracking statuses
+        await refreshGlobalCache();
+        await fetchTeamMembers();
+        populateAuditFilters();
+
+        const { data: visSettings } = await supabaseClient.from('page_visibility_settings').select('enrolled_services').eq('page_id', 'view-audits').single();
+        const fallbackServices = globalServicesList.filter(s => s.is_audit).map(s => s.service_type);
+        const allowedServices = (visSettings && visSettings.enrolled_services) ? visSettings.enrolled_services : fallbackServices;
+        window.globalAuditAllowedServices = allowedServices;
+        
+        const activeAuditClients = globalClientsList.filter(c => {
+            if (!c.standard_services) return false;
+            const clientServices = c.standard_services.split(',').map(s => s.trim().toLowerCase());
+            return allowedServices.some(as => clientServices.includes(as.toLowerCase()));
+        });
+
+        // Fetch follow-up dates and today's updates for these clients
+        const clientIds = activeAuditClients.map(c => c.client_id);
+        if (clientIds.length > 0) {
+            const todayStart = new Date();
+            todayStart.setHours(0,0,0,0);
+
+            const [followupRes, todayLogsRes] = await Promise.all([
+                supabaseClient
+                    .from('task_logs')
+                    .select('client_id, note, timestamp')
+                    .in('client_id', clientIds)
+                    .ilike('note', '%[AUDIT_FOLLOWUP]%')
+                    .order('timestamp', { ascending: false }),
+                supabaseClient
+                    .from('task_logs')
+                    .select('client_id, note, bank_status, sales_status, ledger_status, others_status')
+                    .in('client_id', clientIds)
+                    .is('task_id', null)
+                    .gte('timestamp', todayStart.toISOString())
+            ]);
+                
+            const followupLogs = followupRes.data || [];
+            const todayLogs = todayLogsRes.data || [];
+
+            const followupMap = {};
+            if (followupLogs) {
+                followupLogs.forEach(log => {
+                    if (log.note && !followupMap[log.client_id]) {
+                        const match = log.note.match(/\[AUDIT_FOLLOWUP\] Date: (.*?)(?:\s*\||$)/);
+                        if (match) {
+                            followupMap[log.client_id] = match[1];
+                        }
+                    }
+                });
+            }
+
+            const updatedTodayMap = {};
+            if (todayLogs) {
+                todayLogs.forEach(log => {
+                    if (log.note && (
+                        log.bank_status !== null || 
+                        log.sales_status !== null || 
+                        log.ledger_status !== null || 
+                        log.others_status !== null || 
+                        log.note.includes('[AUDIT_FOLLOWUP]') || 
+                        log.note.includes('Audit status') || 
+                        log.note.includes('[Acknowledged Today]')
+                    )) {
+                        updatedTodayMap[log.client_id] = true;
+                    }
+                });
+            }
+            
+            activeAuditClients.forEach(c => {
+                c.followup_date = followupMap[c.client_id] || '';
+                c.updated_today = !!updatedTodayMap[c.client_id];
+            });
+        }
+
+        globalAuditsList = activeAuditClients;
+        filterAudits();
+    }
+
+    function renderAuditsTable(clients) {
+        const container = document.getElementById('audit-list-container');
+        container.innerHTML = '';
+        
+        if(!clients || clients.length === 0) return container.innerHTML = '<div class="text-center p-8 text-gray-500 border border-dashed rounded-xl bg-white">No active audits match your filters. Go to Compliance Manager to Star a service.</div>';
+
+        const auditServiceNames = globalServicesList.filter(s => s.is_audit).map(s => s.service_type);
+
+        clients.forEach((client, index) => {
+            // Find exactly which audit services triggered this client to appear
+            const enrolled = client.standard_services ? client.standard_services.split(',').map(s => s.trim()) : [];
+            const activeServices = enrolled.filter(s => auditServiceNames.includes(s)).join(', ');
+            
+            // Find assignee
+            let assigneeName = 'Unassigned';
+            if (window.globalAssignmentsList) {
+                const allowedServices = window.globalAuditAllowedServices || [];
+                const assignment = window.globalAssignmentsList.find(a => 
+                    a.client_id === client.client_id && 
+                    (
+                        a.service_type === 'Audit Status' || 
+                        (a.service_type && a.service_type.toLowerCase().includes('audit')) ||
+                        (allowedServices.some(as => a.service_type && a.service_type.toLowerCase() === as.toLowerCase()))
+                    )
+                );
+                if (assignment && assignment.maker_id) {
+                    const user = globalTeamMembers.find(u => u.id === assignment.maker_id);
+                    if (user) assigneeName = user.name;
+                }
+            }
+            
+            const assigneeBadge = assigneeName !== 'Unassigned' ? `<span class="ml-2 px-1.5 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded text-[9px] font-bold uppercase tracking-wider inline-flex items-center"><i class="fa-solid fa-user-tie mr-1"></i>${assigneeName}</span>` : '';
+
+            const badgeClass = "bg-indigo-50 text-indigo-700 px-3 py-2.5 rounded-md text-xs font-medium w-full block text-left min-h-[40px] flex items-center";
+
+            let st = client.audit_status || 'Not yet started';
+            if (st === 'Pending') st = 'Not yet started';
+            if (st === 'In Progress') st = 'In progress';
+            
+            let cardClass = "bg-white rounded-xl shadow-sm border border-gray-100 border-l-4 border-l-gray-400 p-5 mb-4 cursor-pointer hover:shadow-md hover:border-gray-300 transition flex flex-col lg:flex-row items-start lg:items-center gap-6";
+            if (st === 'Not yet started') {
+                cardClass = "bg-yellow-50 rounded-xl shadow-sm border border-yellow-200 border-l-4 border-l-yellow-400 p-5 mb-4 cursor-pointer hover:shadow-md hover:border-yellow-300 transition flex flex-col lg:flex-row items-start lg:items-center gap-6";
+            } else if (st === 'Completed') {
+                cardClass = "bg-blue-50 rounded-xl shadow-sm border border-blue-200 border-l-4 border-l-blue-500 p-5 mb-4 cursor-pointer hover:shadow-md hover:border-blue-300 transition flex flex-col lg:flex-row items-start lg:items-center gap-6";
+            }
+
+            const followupBadge = client.followup_date ? `<span class="ml-2 px-1.5 py-0.5 bg-rose-50 text-rose-700 border border-rose-100 rounded text-[9px] font-bold uppercase tracking-wider inline-flex items-center"><i class="fa-solid fa-clock mr-1"></i>Followup: ${client.followup_date}</span>` : '';
+
+            let ackCheckboxHtml = '';
+            const isOverdue = client.followup_date ? (new Date(client.followup_date) < new Date().setHours(0,0,0,0)) : false;
+            if (st !== 'Completed' && !isOverdue) {
+                if (client.updated_today) {
+                    ackCheckboxHtml = `
+                        <span onclick="event.stopPropagation()" class="ml-2 px-1.5 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded text-[9px] font-bold uppercase tracking-wider inline-flex items-center"><i class="fa-solid fa-square-check mr-1"></i>Checked</span>
+                    `;
+                } else {
+                    ackCheckboxHtml = `
+                        <button onclick="acknowledgeAuditToday('${client.client_id}', event)" class="ml-2 px-1.5 py-0.5 bg-indigo-50 text-indigo-600 border border-indigo-200 rounded text-[9px] font-bold uppercase tracking-wider hover:bg-indigo-600 hover:text-white hover:border-indigo-600 transition inline-flex items-center"><i class="fa-regular fa-square mr-1"></i>Acknowledge</button>
+                    `;
+                }
+            }
+
+            container.innerHTML += `
+            <div onclick='openAuditDrawer(${JSON.stringify(client).replace(/'/g, "&#39;")})' class="${cardClass}">
+                <div class="w-full lg:w-1/3 flex items-start gap-4">
+                    <span class="text-gray-400 font-bold text-sm mt-0.5">#${index + 1}</span>
+                    <div>
+                        <span class="text-xs font-bold text-indigo-700 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded tracking-wider uppercase mb-1.5 inline-block">${activeServices}</span>
+                        <div class="flex items-center flex-wrap gap-y-1">
+                            <h4 class="font-bold text-gray-900 text-base hover:text-blue-600 hover:underline cursor-pointer" onclick="event.stopPropagation(); openUniversalClientProfile('${client.client_id}')">${client.display_name}</h4>
+                            ${assigneeBadge}
+                        </div>
+                        <p class="text-xs font-bold text-gray-400 mt-1 uppercase tracking-wider flex items-center flex-wrap gap-1">${client.entity_type || 'Entity'}${followupBadge}${ackCheckboxHtml}</p>
+                    </div>
+                </div>
+                <div class="w-full lg:w-2/3 grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div><span class="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-1.5">Bank</span><div class="${badgeClass}">${client.audit_bank || '-'}</div></div>
+                    <div><span class="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-1.5">Sales/Pur.</span><div class="${badgeClass}">${client.audit_sales || '-'}</div></div>
+                    <div><span class="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-1.5">Cash & Credit</span><div class="${badgeClass}">${client.audit_ledger || '-'}</div></div>
+                    <div><span class="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-1.5">Others</span><div class="${badgeClass}">${client.audit_others || '-'}</div></div>
+                </div>
+            </div>`;
+        });
+    }
+
+    function filterAudits() {
+        const query = document.getElementById('auditSearchInput').value.toLowerCase();
+        const serviceQuery = document.getElementById('auditServiceFilter').value;
+        const assignQuery = document.getElementById('auditAssignFilter').value;
+        
+        const filtered = globalAuditsList.filter(client => {
+            const clientMatch = client.display_name?.toLowerCase().includes(query) || false;
+            
+            const enrolled = client.standard_services ? client.standard_services.split(',').map(s => s.trim()) : [];
+            const auditServiceNames = globalServicesList.filter(s => s.is_audit).map(s => s.service_type);
+            const activeAuditServices = enrolled.filter(s => auditServiceNames.includes(s));
+            
+            const serviceSearchMatch = activeAuditServices.some(s => s.toLowerCase().includes(query));
+            const dropdownMatch = serviceQuery === "" || activeAuditServices.includes(serviceQuery);
+            
+            // Assignment logic
+            let assignmentMatch = true;
+            if (assignQuery === 'mine') {
+                const allowedServices = window.globalAuditAllowedServices || [];
+                const assignment = (window.globalAssignmentsList || []).find(a => 
+                    a.client_id === client.client_id && 
+                    (
+                        a.service_type === 'Audit Status' || 
+                        (a.service_type && a.service_type.toLowerCase().includes('audit')) ||
+                        (allowedServices.some(as => a.service_type && a.service_type.toLowerCase() === as.toLowerCase()))
+                    ) && 
+                    a.maker_id === currentUser.id
+                );
+                assignmentMatch = !!assignment;
+            }
+            
+            return (clientMatch || serviceSearchMatch) && dropdownMatch && assignmentMatch;
+        });
+        
+        const sortOrder = document.getElementById('auditSortOrder')?.value || 'none';
+        
+        if (sortOrder === 'followup_asc') {
+            filtered.sort((a, b) => {
+                if (!a.followup_date) return 1;
+                if (!b.followup_date) return -1;
+                return new Date(a.followup_date) - new Date(b.followup_date);
+            });
+        } else if (sortOrder === 'followup_desc') {
+            filtered.sort((a, b) => {
+                if (!a.followup_date) return 1;
+                if (!b.followup_date) return -1;
+                return new Date(b.followup_date) - new Date(a.followup_date);
+            });
+        }
+
+        renderAuditsTable(filtered);
+    }
+
+    function updateAuditStatusColor(selectEl) {
+        const container = document.getElementById('auditStatusContainer');
+        const label = document.getElementById('auditStatusLabel');
+        if (!container) return;
+        
+        container.className = "px-4 py-2 rounded-lg border flex items-center gap-3 transition-colors min-w-[200px]";
+        selectEl.className = "bg-transparent font-bold outline-none text-sm cursor-pointer w-full";
+        if(label) label.className = "block text-[10px] font-bold uppercase tracking-wider whitespace-nowrap";
+        
+        const val = selectEl.value;
+        if (val === 'Not yet started') {
+            container.classList.add('bg-yellow-50', 'border-yellow-200');
+            selectEl.classList.add('text-yellow-900');
+            if(label) label.classList.add('text-yellow-800');
+        } else if (val === 'In progress') {
+            container.classList.add('bg-white', 'border-gray-300', 'shadow-sm');
+            selectEl.classList.add('text-gray-900');
+            if(label) label.classList.add('text-gray-600');
+        } else if (val === 'Completed') {
+            container.classList.add('bg-blue-50', 'border-blue-200');
+            selectEl.classList.add('text-blue-900');
+            if(label) label.classList.add('text-blue-800');
+        }
+    }
+
+    async function openAuditDrawer(client) {
+        currentActiveClient = client; 
+        await fetchTeamMembers();
+        const nameHeader = document.getElementById('drawerClientName');
+        nameHeader.innerText = client.display_name;
+        nameHeader.onclick = () => { openUniversalClientProfile(client.client_id); };
+        
+        // Fill the fields using the tracking data permanently locked to the client
+        let st = client.audit_status || 'Not yet started';
+        if (st === 'Pending') st = 'Not yet started';
+        if (st === 'In Progress') st = 'In progress';
+        const stSelect = document.getElementById('drawMainStatus');
+        stSelect.value = st;
+        if (typeof updateAuditStatusColor === 'function') updateAuditStatusColor(stSelect);
+        document.getElementById('drawBank').value = client.audit_bank || '';
+        document.getElementById('drawSales').value = client.audit_sales || '';
+        document.getElementById('drawLedger').value = client.audit_ledger || '';
+        document.getElementById('drawOthers').value = client.audit_others || '';
+        const transferSelect = document.getElementById('drawTransferUser');
+        if (transferSelect) {
+            transferSelect.innerHTML = '<option value="">-- Keep Current Owner --</option>';
+            globalTeamMembers.forEach(u => transferSelect.innerHTML += `<option value="${u.id}">${u.name}</option>`);
+            transferSelect.value = '';
+        }
+        
+        document.getElementById('drawNote').value = ''; 
+        document.getElementById('drawFollowupDate').value = ''; // Clear
+        document.getElementById('auditDrawerOverlay').classList.remove('hidden');
+
+        const tl = document.getElementById('drawerHistoryTimeline'); 
+        tl.innerHTML = '<div class="text-sm text-gray-400">Loading history...</div>';
+        
+        // Fetch strictly client-level logs
+        const { data: logs } = await supabaseClient.from('task_logs').select('*, users(name)').eq('client_id', client.client_id).is('task_id', null).order('timestamp', { ascending: false });
+        tl.innerHTML = '';
+
+        // Find latest follow-up date
+        const followupLog = logs ? logs.find(log => log.note && log.note.includes('[AUDIT_FOLLOWUP]')) : null;
+        if (followupLog) {
+            const match = followupLog.note.match(/\[AUDIT_FOLLOWUP\] Date: (.*?)(?:\s*\||$)/);
+            if (match) {
+                document.getElementById('drawFollowupDate').value = match[1];
+            }
+        }
+        
+        // Show ONLY logs that were created by the Audit Status page
+        // These logs will have non-null values for the audit status columns (even if they are empty strings)
+        const auditLogs = logs ? logs.filter(log => {
+            return log.bank_status !== null || log.sales_status !== null || log.ledger_status !== null || log.others_status !== null;
+        }) : [];
+        
+        if (auditLogs.length > 0) {
+            auditLogs.forEach(log => {
+                const d = new Date(log.timestamp).toLocaleDateString('en-IN', {day:'2-digit', month:'short', year:'numeric'});
+                const t = new Date(log.timestamp).toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'});
+                let gridHtml = '';
+                if(log.bank_status || log.sales_status || log.ledger_status || log.others_status) {
+                    gridHtml = `<div class="grid grid-cols-1 md:grid-cols-4 gap-4 bg-gray-50 border border-gray-100 rounded-lg p-4 mt-3"><div><span class="font-bold text-gray-800 block text-xs uppercase mb-1">Bank:</span><span class="text-sm text-gray-700">${log.bank_status || '-'}</span></div><div><span class="font-bold text-gray-800 block text-xs uppercase mb-1">Sales:</span><span class="text-sm text-gray-700">${log.sales_status || '-'}</span></div><div><span class="font-bold text-gray-800 block text-xs uppercase mb-1">Cash & Credit:</span><span class="text-sm text-gray-700">${log.ledger_status || '-'}</span></div><div><span class="font-bold text-gray-800 block text-xs uppercase mb-1">Others:</span><span class="text-sm text-gray-700">${log.others_status || '-'}</span></div></div>`;
+                }
+                const mainNote = log.note !== 'Status Updated' && log.note !== 'Historical Update' ? `<p class="text-sm text-gray-800 mb-2 px-1">${log.note}</p>` : '';
+                tl.innerHTML += `<div class="bg-white rounded-xl border border-gray-200 mb-4 shadow-sm overflow-hidden border-l-4 border-l-gray-300"><div class="px-5 py-3 border-b border-gray-100 flex items-center gap-2"><span class="text-xs text-gray-500">${d} ${t}</span><span class="text-gray-300">•</span><span class="text-sm font-bold text-blue-600 uppercase tracking-wide">${log.users?.name || 'System'}</span></div><div class="p-5">${mainNote}${gridHtml}</div></div>`;
+            });
+        } else { tl.innerHTML = '<div class="text-sm text-gray-400 py-2">No history notes yet.</div>'; }
+    }
+
+    function closeAuditDrawer() { 
+        document.getElementById('auditDrawerOverlay').classList.add('hidden'); 
+    }
+    
+    async function saveAuditDrawer() {
+        const btn = document.getElementById('saveDrawerBtn'); btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving...';
+        
+        const newStatus = document.getElementById('drawMainStatus').value;
+        const b = document.getElementById('drawBank').value.trim();
+        const s = document.getElementById('drawSales').value.trim();
+        const l = document.getElementById('drawLedger').value.trim();
+        const o = document.getElementById('drawOthers').value.trim();
+        const newNote = document.getElementById('drawNote').value.trim();
+        const followupDate = document.getElementById('drawFollowupDate').value;
+        const transferTo = document.getElementById('drawTransferUser') ? document.getElementById('drawTransferUser').value : '';
+
+        const isOverdue = currentActiveClient.followup_date ? (new Date(currentActiveClient.followup_date) < new Date().setHours(0,0,0,0)) : false;
+        const origFollowupDate = currentActiveClient.followup_date || '';
+        const isDateChanged = origFollowupDate !== followupDate;
+
+        if (isOverdue && newStatus !== 'Completed') {
+            const hasComment = newNote.length > 0;
+            const hasDateChanged = isDateChanged;
+            if (!hasComment && !hasDateChanged) {
+                alert("This audit follow-up is overdue. You must write a comment or update the follow-up date to save.");
+                btn.innerHTML = 'Save Update';
+                return;
+            }
+        }
+
+        // 1. Update the actual Client record
+        const updates = { audit_status: newStatus, audit_bank: b, audit_sales: s, audit_ledger: l, audit_others: o };
+        await supabaseClient.from('clients').update(updates).eq('client_id', currentActiveClient.client_id);
+        
+        // 2. Insert into the client's history log
+        let logNote = newNote || `Audit status updated to ${newStatus}`;
+        if (isDateChanged) {
+            const dateLogStr = `Follow-up date updated from ${origFollowupDate || 'None'} to ${followupDate || 'None'}`;
+            logNote = newNote ? `${newNote} | ${dateLogStr}` : dateLogStr;
+        }
+        if (followupDate) {
+            logNote = `[AUDIT_FOLLOWUP] Date: ${followupDate} | Note: ${logNote}`;
+        }
+
+        await supabaseClient.from('task_logs').insert([{ 
+            client_id: currentActiveClient.client_id, 
+            user_id: currentUser.id, 
+            note: logNote, 
+            bank_status: b, 
+            sales_status: s, 
+            ledger_status: l, 
+            others_status: o,
+            timestamp: new Date().toISOString()
+        }]);
+
+        if (transferTo) {
+            // Delete any existing audit-related assignments for this client to prevent duplicates
+            const existingAuditAssignments = (window.globalAssignmentsList || []).filter(a => 
+                a.client_id === currentActiveClient.client_id && 
+                (a.service_type === 'Audit Status' || (a.service_type && a.service_type.toLowerCase().includes('audit')))
+            );
+            for (const ea of existingAuditAssignments) {
+                await supabaseClient.from('client_assignments')
+                    .delete()
+                    .eq('id', ea.id);
+            }
+            await supabaseClient.from('client_assignments').insert([{
+                client_id: currentActiveClient.client_id,
+                service_type: 'Audit Status',
+                maker_id: transferTo,
+                checker_id: null
+            }]);
+            await supabaseClient.from('task_logs').insert([{
+                client_id: currentActiveClient.client_id,
+                user_id: currentUser.id,
+                note: `Audit workflow transferred to ${globalTeamMembers.find(u => u.id === transferTo)?.name || 'selected user'}`,
+                timestamp: new Date().toISOString()
+            }]);
+        }
+        
+        closeAuditDrawer(); 
+        btn.innerHTML = 'Save Update';
+
+        if (newStatus === 'Completed' && currentActiveClient.audit_status !== 'Completed') {
+            const auditService = globalServicesList.find(s => s.service_type === 'Audit Status');
+            const mockTask = {
+                client_id: currentActiveClient.client_id,
+                clients: { display_name: currentActiveClient.display_name },
+                custom_task_name: 'Audit Status',
+                estimated_fee: auditService ? auditService.standard_fee : 0
+            };
+            openAutoInvoiceModal(mockTask);
+        } else {
+            globalRefresh();
+        }
+    }
+
+    // ==========================================
+    // CUSTOM / UNIVERSAL TASK DRAWER LOGIC
+    // ==========================================
+    async function loadCustomTasksData() {
+        await fetchTeamMembers();
+        const container = document.getElementById('custom-task-list-container');
+        container.innerHTML = '<div class="text-center p-8 text-gray-500"><i class="fa-solid fa-spinner fa-spin text-2xl mb-2"></i><br>Loading tasks...</div>';
+        
+        const { data } = await supabaseClient.from('tasks').select(`*, clients(client_id, display_name)`).eq('is_custom', true).neq('status', 'Completed').eq('assigned_to', currentUser.id).order('due_date', { ascending: true });
+        
+        container.innerHTML = '';
+        if(!data || data.length === 0) return container.innerHTML = '<div class="text-center p-12 text-gray-500 border border-dashed rounded-xl bg-white"><i class="fa-solid fa-clipboard-check text-4xl text-gray-300 mb-3"></i><br>No active custom tasks found.</div>';
+
+        const todayStart = new Date();
+        todayStart.setHours(0,0,0,0);
+        const { data: ackLogs } = await supabaseClient.from('task_logs')
+            .select('task_id')
+            .eq('user_id', currentUser.id)
+            .gte('timestamp', todayStart.toISOString())
+            .ilike('note', '%[Acknowledged Today]%');
+        
+        const ackMap = {};
+        if (ackLogs) {
+            ackLogs.forEach(l => {
+                if (l.task_id) ackMap[l.task_id] = true;
+            });
+        }
+
+        data.forEach((task) => {
+            const clientName = task.clients?.display_name || 'Unknown Client';
+            const assignee = globalTeamMembers.find(u => u.id === task.assigned_to)?.name || 'Unassigned';
+            
+            let isOverdue = false;
+            let dateColor = "bg-gray-100 text-gray-600";
+            let dateText = "No Due Date";
+            if (task.due_date) {
+                const dDate = new Date(task.due_date); dDate.setHours(0,0,0,0);
+                const today = new Date(); today.setHours(0,0,0,0);
+                if (dDate < today) {
+                    dateColor = "bg-red-100 text-red-700 border border-red-200";
+                    isOverdue = true;
+                }
+                else if (dDate.getTime() === today.getTime()) dateColor = "bg-amber-100 text-amber-700 border border-amber-200";
+                else dateColor = "bg-blue-50 text-blue-600 border border-blue-100";
+                dateText = dDate.toLocaleDateString('en-IN', {day:'numeric', month:'short', year:'numeric'});
+            }
+
+            const statusColor = task.status === 'Pending' ? 'bg-gray-100 text-gray-600' : 'bg-indigo-100 text-indigo-700';
+
+            const isAcked = !!ackMap[task.task_id];
+            let ackCheckboxHtml = '';
+            if (!isOverdue) {
+                if (isAcked) {
+                    ackCheckboxHtml = `
+                        <div onclick="event.stopPropagation()" class="flex items-center gap-1.5 text-xs text-emerald-600 bg-emerald-50 px-2.5 py-1.5 rounded-xl border border-emerald-100 font-black uppercase tracking-wider">
+                            <i class="fa-solid fa-square-check text-sm"></i> Checked
+                        </div>
+                    `;
+                } else {
+                    const safeId = task.task_id !== undefined ? task.task_id : task.id;
+                    ackCheckboxHtml = `
+                        <button onclick="acknowledgeTaskToday('${safeId}', event)" class="flex items-center gap-1.5 text-xs text-indigo-600 bg-indigo-50 border border-indigo-200 px-2.5 py-1.5 rounded-xl hover:bg-indigo-600 hover:text-white transition font-black uppercase tracking-wider shadow-sm" title="Acknowledge you know about this task today">
+                            <i class="fa-regular fa-square text-sm"></i> Acknowledge
+                        </button>
+                    `;
+                }
+            }
+
+            // Uses the same openTaskDrawer as the generic Task Board!
+            container.innerHTML += `
+            <div onclick='openTaskDrawer(${JSON.stringify(task).replace(/'/g, "&#39;")})' class="bg-white rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-indigo-500 p-5 cursor-pointer hover:shadow-md hover:border-indigo-300 transition flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                <div class="flex-1">
+                    <span class="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-1 hover:text-blue-600 hover:underline cursor-pointer w-max" onclick="event.stopPropagation(); openUniversalClientProfile('${task.client_id}')">${clientName}</span>
+                    <h4 class="font-bold text-gray-900 text-lg">${task.custom_task_name}</h4>
+                </div>
+                <div class="flex flex-wrap items-center gap-3 text-xs font-bold">
+                    ${ackCheckboxHtml}
+                    <div class="flex items-center gap-1.5 text-gray-600"><i class="fa-solid fa-user-tie text-gray-400"></i> ${assignee}</div>
+                    <div class="px-3 py-1.5 rounded-xl ${dateColor}"><i class="fa-regular fa-clock mr-1"></i> ${dateText}</div>
+                    <div class="px-3 py-1.5 rounded-xl ${statusColor}">${task.status}</div>
+                </div>
+            </div>`;
+        });
+    }
+
+    window.acknowledgeTaskToday = async function(taskId, event) {
+        if (event) event.stopPropagation();
+        
+        try {
+            const { error } = await supabaseClient.from('task_logs').insert([{
+                task_id: taskId,
+                user_id: currentUser.id,
+                note: `[Acknowledged Today] Task acknowledged.`,
+                timestamp: new Date().toISOString()
+            }]);
+            
+            if (error) throw error;
+            
+            alert("Task acknowledged successfully!");
+            globalRefresh();
+        } catch (err) {
+            alert("Error: " + err.message);
+        }
+    }
+
+    window.acknowledgeAuditToday = async function(clientId, event) {
+        if (event) event.stopPropagation();
+        
+        try {
+            const { error } = await supabaseClient.from('task_logs').insert([{
+                client_id: clientId,
+                user_id: currentUser.id,
+                note: `[Acknowledged Today] Audit acknowledged.`,
+                timestamp: new Date().toISOString()
+            }]);
+            
+            if (error) throw error;
+            
+            alert("Audit acknowledged successfully!");
+            globalRefresh();
+        } catch (err) {
+            alert("Error: " + err.message);
+        }
+    }
+
+    async function openCreateCustomTaskModal() {
+        await fetchTeamMembers();
+        const datalist = document.getElementById('ctClientDatalist'); datalist.innerHTML = '';
+        globalClientsList.forEach(c => datalist.innerHTML += `<option value="${c.display_name}"></option>`);
+        const userSelect = document.getElementById('ctAssignee'); userSelect.innerHTML = '<option value="">-- Unassigned --</option>';
+        globalTeamMembers.forEach(u => userSelect.innerHTML += `<option value="${u.id}">${u.name}</option>`);
+        document.getElementById('ctClientSearch').value = ''; document.getElementById('ctTaskName').value = ''; document.getElementById('ctDueDate').value = ''; document.getElementById('ctFee').value = '0';
+        document.getElementById('createCustomTaskModal').classList.remove('hidden');
+    }
+
+    function closeCreateCustomTaskModal() { document.getElementById('createCustomTaskModal').classList.add('hidden'); }
+
+    async function saveNewCustomTask() {
+        const clientName = document.getElementById('ctClientSearch').value.trim();
+        const taskName = document.getElementById('ctTaskName').value.trim();
+        const assigneeId = document.getElementById('ctAssignee').value;
+        const dueDate = document.getElementById('ctDueDate').value;
+        const fee = document.getElementById('ctFee').value;
+
+        if(!clientName || !taskName) return alert("Client and Task Description are required.");
+        const client = globalClientsList.find(c => c.display_name === clientName);
+        if(!client) return alert("Please select a valid client from the dropdown.");
+
+        const btn = document.getElementById('saveCtBtn'); const originalText = btn.innerHTML; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving...';
+
+        try {
+            const { error } = await supabaseClient.from('tasks').insert([{
+                client_id: client.client_id, is_custom: true, custom_task_name: taskName, assigned_to: assigneeId || null, due_date: dueDate || null, estimated_fee: parseFloat(fee) || 0, status: 'Pending'
+            }]);
+            if (error) throw error;
+            closeCreateCustomTaskModal(); globalRefresh();
+        } catch(err) { alert("Database Error: " + err.message); btn.innerHTML = originalText; }
+    }
+
+    // NEW: Universal drawer for both specific Custom Tasks AND specific Compliance Tasks
+    async function openTaskDrawer(task) {
+        activeTask = task; 
+        await fetchTeamMembers();
+
+        document.getElementById('ctDrawerClientName').innerText = task.clients?.display_name || 'Client';
+        document.getElementById('ctDrawerClientName').onclick = () => { openUniversalClientProfile(task.client_id); };
+        
+        const taskName = task.is_custom ? task.custom_task_name : (task.services?.service_type || 'Compliance Task');
+        document.getElementById('ctDrawerTaskName').innerText = taskName;
+        document.getElementById('ctDrawStatus').value = task.status;
+        
+        const userSelect = document.getElementById('ctDrawAssignee');
+        userSelect.innerHTML = '<option value="">-- Unassigned --</option>';
+        globalTeamMembers.forEach(u => userSelect.innerHTML += `<option value="${u.id}">${u.name}</option>`);
+        userSelect.value = task.assigned_to || '';
+
+        document.getElementById('ctDrawDueDate').value = task.due_date || '';
+        document.getElementById('ctDrawFee').value = task.estimated_fee || 0;
+        document.getElementById('ctDrawNote').value = ''; 
+
+        document.getElementById('customTaskDrawerOverlay').classList.remove('hidden');
+
+        const tl = document.getElementById('ctDrawerHistoryTimeline'); 
+        tl.innerHTML = '<div class="text-sm text-gray-400">Loading history...</div>';
+        
+        const pkCol = task.task_id !== undefined ? 'task_id' : 'id';
+        const pkVal = task[pkCol];
+        
+        const { data: logs } = await supabaseClient.from('task_logs').select('*, users(name)').eq('task_id', pkVal).order('timestamp', { ascending: false });
+        tl.innerHTML = '';
+        
+        if (logs && logs.length > 0) {
+            logs.forEach(log => {
+                const d = new Date(log.timestamp).toLocaleDateString('en-IN', {day:'2-digit', month:'short', year:'numeric'});
+                const t = new Date(log.timestamp).toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'});
+                const mainNote = log.note !== 'Status Updated' ? `<p class="text-sm text-gray-800">${log.note}</p>` : '<p class="text-sm text-gray-400 italic">Settings Updated</p>';
+                
+                tl.innerHTML += `
+                <div class="bg-white rounded-xl border border-gray-200 mb-4 shadow-sm overflow-hidden border-l-4 border-l-gray-300">
+                    <div class="px-5 py-3 border-b border-gray-100 flex items-center gap-2">
+                        <span class="text-xs text-gray-500">${d} ${t}</span><span class="text-gray-300">•</span><span class="text-sm font-bold text-indigo-600 uppercase tracking-wide">${log.users?.name || 'System'}</span>
+                    </div>
+                    <div class="p-5">${mainNote}</div>
+                </div>`;
+            });
+        } else { tl.innerHTML = '<div class="text-sm text-gray-400 py-2">No history notes yet.</div>'; }
+    }
+
+    function closeTaskDrawer() { 
+        document.getElementById('customTaskDrawerOverlay').classList.add('hidden'); 
+    }
+
+    async function saveTaskDrawer() {
+        const btn = document.getElementById('saveCtDrawerBtn');
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving...';
+        
+        const newStatus = document.getElementById('ctDrawStatus').value;
+        const assignee = document.getElementById('ctDrawAssignee').value;
+        const dDate = document.getElementById('ctDrawDueDate').value;
+        const fee = document.getElementById('ctDrawFee').value;
+        const note = document.getElementById('ctDrawNote').value.trim();
+
+        // Calculate if task was overdue
+        let isOverdue = false;
+        if (activeTask.due_date) {
+            const dDateObj = new Date(activeTask.due_date.split('T')[0]); dDateObj.setHours(0,0,0,0);
+            const today = new Date(); today.setHours(0,0,0,0);
+            if (dDateObj < today) {
+                isOverdue = true;
+            }
+        }
+
+        const origDueDate = activeTask.due_date ? activeTask.due_date.split('T')[0] : '';
+        const newDueDate = dDate ? dDate.split('T')[0] : '';
+        const isDateChanged = origDueDate !== newDueDate;
+
+        if (isOverdue && newStatus !== 'Completed') {
+            const hasComment = note.length > 0;
+            const hasDateChanged = isDateChanged;
+            if (!hasComment && !hasDateChanged) {
+                alert("This task is overdue. You must write a comment or update the due date to save.");
+                btn.innerHTML = '<i class="fa-solid fa-check"></i> Save Details & Log Note';
+                return;
+            }
+        }
+
+        const updates = { 
+            status: newStatus, 
+            assigned_to: assignee || null,
+            due_date: dDate || null,
+            estimated_fee: parseFloat(fee) || 0
+        };
+        
+        const pkCol = activeTask.task_id !== undefined ? 'task_id' : 'id';
+        const pkVal = activeTask[pkCol];
+
+        if (!pkVal) {
+            btn.innerHTML = '<i class="fa-solid fa-check"></i> Save Details & Log Note';
+            return alert("Error: Could not identify task ID.");
+        }
+        
+        await supabaseClient.from('tasks').update(updates).eq(pkCol, pkVal);
+        
+        let logNote = note;
+        if (isDateChanged) {
+            const dateLogStr = `Due date updated from ${origDueDate || 'None'} to ${newDueDate || 'None'}`;
+            logNote = note ? `${note} | ${dateLogStr}` : dateLogStr;
+        }
+
+        if (logNote || newStatus !== activeTask.status) {
+            await supabaseClient.from('task_logs').insert([{
+                task_id: pkVal,
+                user_id: currentUser.id,
+                note: logNote || `Status updated to ${newStatus}`,
+                timestamp: new Date().toISOString()
+            }]);
+        }
+
+        closeTaskDrawer();
+        btn.innerHTML = '<i class="fa-solid fa-check"></i> Save Details & Log Note';
+
+        if (newStatus === 'Completed' && activeTask.status !== 'Completed') {
+            activeTask.status = 'Completed';
+            openAutoInvoiceModal(activeTask);
+        } else {
+            globalRefresh();
+        }
+    }
+</script>

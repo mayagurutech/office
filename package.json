@@ -1,0 +1,11 @@
+{
+  "name": "office-os",
+  "version": "2.0.0",
+  "description": "Office OS — Client-side firm management platform",
+  "scripts": {
+    "build": "node build.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

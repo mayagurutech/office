@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Office OS</title>
+    <meta name="description" content="Office OS — Your firm's all-in-one management platform for clients, tasks, compliance, and billing.">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        *, body { font-family: 'Inter', sans-serif; }
+        html { zoom: 0.92; }
+
+        /* --- ACTIVE NAV STATE --- */
+        .app-nav-btn.active-nav {
+            background: rgba(255,255,255,0.1);
+            color: #ffffff;
+            font-weight: 700;
+        }
+        .app-nav-btn.active-nav .nav-icon { color: #818cf8; }
+
+        /* --- SIDEBAR SCROLLBAR --- */
+        #app-sidebar nav::-webkit-scrollbar { width: 4px; }
+        #app-sidebar nav::-webkit-scrollbar-track { background: transparent; }
+        #app-sidebar nav::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 99px; }
+
+        /* --- PAGE SCROLLBAR --- */
+        .os-scroll::-webkit-scrollbar { width: 6px; }
+        .os-scroll::-webkit-scrollbar-track { background: transparent; }
+        .os-scroll::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 99px; }
+        .os-scroll::-webkit-scrollbar-thumb:hover { background: #cbd5e1; }
+
+        /* --- SMOOTH TRANSITIONS --- */
+        .view-transition { transition: opacity 0.15s ease; }
+
+        /* --- PRINT STYLES --- */
+        @media print {
+            body.printing * { visibility: hidden; }
+            body.printing #print-invoice-area,
+            body.printing #print-invoice-area * { visibility: visible; }
+            body.printing #invoicePreviewModal { position: absolute !important; left: 0 !important; top: 0 !important; background: white !important; width: 100% !important; height: 100% !important; overflow: visible !important; }
+            body.printing #print-invoice-area { position: absolute !important; left: 0 !important; top: 0 !important; width: 100% !important; margin: 0 !important; padding: 0 !important; }
+            .no-print { display: none !important; }
+            * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+        }
+
+        /* --- LOGIN SCREEN --- */
+        .login-input {
+            width: 100%;
+            background: #f8fafc;
+            border: 1.5px solid #e2e8f0;
+            border-radius: 14px;
+            padding: 14px 18px;
+            font-size: 15px;
+            font-weight: 500;
+            color: #0f172a;
+            outline: none;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        .login-input:focus {
+            border-color: #6366f1;
+            box-shadow: 0 0 0 4px rgba(99,102,241,0.1);
+        }
+        .login-input::placeholder { color: #94a3b8; }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800 antialiased overflow-hidden">
+
+    <!-- ==================== LOGIN SCREEN ==================== -->
+    <div id="login-screen" class="flex absolute inset-0 z-50 w-full" style="min-height: calc(100vh / 0.85);">
+        <!-- Left Panel -->
+        <div class="hidden lg:flex lg:w-1/2 bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 flex-col items-center justify-center p-16 relative overflow-hidden">
+            <div class="absolute top-0 left-0 w-64 h-64 bg-indigo-600/20 rounded-full blur-3xl -translate-x-1/2 -translate-y-1/2"></div>
+            <div class="absolute bottom-0 right-0 w-96 h-96 bg-violet-600/20 rounded-full blur-3xl translate-x-1/3 translate-y-1/3"></div>
+            <div class="relative text-center">
+                <div class="w-20 h-20 bg-gradient-to-br from-indigo-500 to-violet-600 rounded-[2rem] flex items-center justify-center mx-auto mb-8 shadow-2xl shadow-indigo-500/30">
+                    <i class="fa-solid fa-briefcase text-white text-3xl"></i>
+                </div>
+                <h1 class="text-4xl font-black text-white tracking-tight mb-3">Office OS</h1>
+                <p class="text-slate-400 text-base font-medium max-w-xs mx-auto leading-relaxed">Your firm's all-in-one intelligence platform for clients, compliance & collections.</p>
+                <div class="mt-10 grid grid-cols-3 gap-6">
+                    <div class="text-center">
+                        <p class="text-2xl font-black text-white">CRM</p>
+                        <p class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Client Mgmt</p>
+                    </div>
+                    <div class="text-center border-x border-white/10">
+                        <p class="text-2xl font-black text-white">GST</p>
+                        <p class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Compliance</p>
+                    </div>
+                    <div class="text-center">
+                        <p class="text-2xl font-black text-white">AR</p>
+                        <p class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">Recovery</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- Right Panel -->
+        <div class="w-full lg:w-1/2 bg-white flex flex-col items-center justify-center p-8 lg:p-16">
+            <div class="w-full max-w-sm">
+                <div class="mb-10">
+                    <div class="w-12 h-12 bg-indigo-50 rounded-2xl flex items-center justify-center mb-6 lg:hidden">
+                        <i class="fa-solid fa-briefcase text-indigo-600 text-xl"></i>
+                    </div>
+                    <h2 class="text-3xl font-black text-slate-900 tracking-tight mb-2">Sign in</h2>
+                    <p class="text-slate-500 font-medium text-sm">Enter your credentials to access Office OS.</p>
+                </div>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">Username</label>
+                        <input type="text" id="loginName" onkeydown="if(event.key === 'Enter') attemptLogin()" class="login-input" placeholder="Enter username">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">4-Digit PIN</label>
+                        <input type="password" id="loginPin" maxlength="4" onkeydown="if(event.key === 'Enter') attemptLogin()" class="login-input text-center text-2xl tracking-[0.5em]" placeholder="••••">
+                    </div>
+                    <p id="loginError" class="text-red-500 text-sm text-center font-bold hidden bg-red-50 p-3 rounded-xl border border-red-100">Invalid name or PIN. Please try again.</p>
+                    <button onclick="attemptLogin()" id="loginBtn" class="w-full bg-slate-900 text-white rounded-2xl py-4 font-black hover:bg-black transition-all active:scale-95 shadow-xl shadow-slate-200 text-sm tracking-wide mt-2">
+                        Sign In to Office OS
+                    </button>
+                </div>
+                <p class="text-center text-xs text-slate-400 font-medium mt-8">Secured access · Office OS v2.0</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== MAIN APP ==================== -->
+    <div id="dashboard-screen" class="hidden flex w-full" style="height: calc(100vh / 0.85); min-height: calc(100vh / 0.85);">
+
+        <!-- Mobile overlay -->
+        <div id="sidebar-overlay" onclick="closeSidebar()" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-30 hidden md:hidden no-print"></div>
+
+        <!-- ==================== SIDEBAR ==================== -->
+        <aside id="app-sidebar" class="w-72 md:w-60 bg-slate-900 flex flex-col z-40 shadow-2xl no-print fixed md:relative inset-y-0 left-0 transform -translate-x-full md:translate-x-0 transition-transform duration-300 ease-out">
+
+            <!-- Logo -->
+            <div class="h-16 flex items-center px-5 border-b border-white/5 flex-shrink-0">
+                <div class="w-8 h-8 bg-gradient-to-br from-indigo-500 to-violet-600 rounded-xl flex items-center justify-center mr-3 shadow-lg flex-shrink-0">
+                    <i class="fa-solid fa-briefcase text-white text-sm"></i>
+                </div>
+                <span class="text-lg font-black text-white tracking-tight">Office OS</span>
+                <button onclick="closeSidebar()" class="md:hidden ml-auto text-slate-400 hover:text-white transition">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+
+            <!-- Navigation -->
+            <nav class="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
+                <p class="text-[9px] font-black text-slate-600 uppercase tracking-[0.2em] px-3 pb-2 pt-2">Main</p>
+
+                <button onclick="switchView('view-dashboard')" data-view="view-dashboard" id="nav-view-dashboard"
+                    class="app-nav-btn w-full flex items-center gap-3 px-3 py-2.5 hover:bg-white/8 text-slate-400 hover:text-white rounded-xl text-left transition-all text-sm font-semibold group">
+                    <i class="fa-solid fa-chart-pie nav-icon w-4 text-center text-slate-500 group-hover:text-indigo-400 transition-colors"></i>
+                    Dashboard
+                </button>
+
+                <button onclick="switchView('view-clients')" data-view="view-clients" id="nav-view-clients"
+                    class="app-nav-btn w-full flex items-center gap-3 px-3 py-2.5 hover:bg-white/8 text-slate-400 hover:text-white rounded-xl text-left transition-all text-sm font-semibold group">
+                    <i class="fa-solid fa-users nav-icon w-4 text-center text-slate-500 group-hover:text-indigo-400 transition-colors"></i>
+                    Clients
+                </button>
+
+                <button onclick="switchView('view-startups-subsidy')" data-view="view-startups-subsidy" id="nav-view-startups-subsidy"
+                    class="app-nav-btn w-full flex items-center gap-3 px-3 py-2.5 hover:bg-white/8 text-slate-400 hover:text-white rounded-xl text-left transition-all text-sm font-semibold group">
+                    <i class="fa-solid fa-rocket nav-icon w-4 text-center text-slate-500 group-hover:text-indigo-400 transition-colors"></i>
+                    Startups & Subsidy
+                </button>
+
+                <button onclick="switchView('view-tasks')" data-view="view-tasks" id="nav-view-tasks"
+                    class="app-nav-btn w-full flex items-center gap-3 px-3 py-2.5 hover:bg-white/8 text-slate-400 hover:text-white rounded-xl text-left transition-all text-sm font-semibold group">
+                    <i class="fa-solid fa-bars-progress nav-icon w-4 text-center text-slate-500 group-hover:text-indigo-400 transition-colors"></i>
+                    Task Board
+                </button>
+
+                <p class="text-[9px] font-black text-slate-600 uppercase tracking-[0.2em] px-3 pb-2 pt-4">Compliance</p>
+
+                <button onclick="switchView('view-gst-center')" data-view="view-gst-center" id="nav-view-gst-center"
+                    class="app-nav-btn w-full flex items-center gap-3 px-3 py-2.5 hover:bg-white/8 text-slate-400 hover:text-white rounded-xl text-left transition-all text-sm font-semibold group">
+                    <i class="fa-solid fa-file-invoice nav-icon w-4 text-center text-slate-500 group-hover:text-indigo-400 transition-colors"></i>
+                    GST Center
+                </button>
+
+                <button onclick="switchView('view-tds-center')" data-view="view-tds-center" id="nav-view-tds-center"
+                    class="app-nav-btn w-full flex items-center gap-3 px-3 py-2.5 hover:bg-white/8 text-slate-400 hover:text-white rounded-xl text-left transition-all text-sm font-semibold group">
+                    <i class="fa-solid fa-file-invoice nav-icon w-4 text-center text-slate-500 group-hover:text-indigo-400 transition-colors"></i>
+                    TDS Returns
+                </button>
+
+                <button onclick="switchView('view-audits')" data-view="view-audits" id="nav-view-audits"
+                    class="app-nav-btn w-full flex items-center gap-3 px-3 py-2.5 hover:bg-white/8 text-slate-400 hover:text-white rounded-xl text-left transition-all text-sm font-semibold group">
+                    <i class="fa-solid fa-list-check nav-icon w-4 text-center text-slate-500 group-hover:text-indigo-400 transition-colors"></i>
+                    Audit Status
+                </button>
+
+                <button onclick="switchView('view-custom-tasks')" data-view="view-custom-tasks" id="nav-view-custom-tasks"
+                    class="app-nav-btn w-full flex items-center gap-3 px-3 py-2.5 hover:bg-white/8 text-slate-400 hover:text-white rounded-xl text-left transition-all text-sm font-semibold group">
+                    <i class="fa-solid fa-clipboard-list nav-icon w-4 text-center text-slate-500 group-hover:text-indigo-400 transition-colors"></i>
+                    Custom Tasks
+                </button>
+
+                <button onclick="switchView('view-compliance')" data-view="view-compliance" id="nav-view-compliance"
+                    class="app-nav-btn w-full flex items-center gap-3 px-3 py-2.5 hover:bg-white/8 text-slate-400 hover:text-white rounded-xl text-left transition-all text-sm font-semibold group">
+                    <i class="fa-solid fa-calendar-check nav-icon w-4 text-center text-slate-500 group-hover:text-indigo-400 transition-colors"></i>
+                    Compliance
+                </button>
+
+                <p class="text-[9px] font-black text-slate-600 uppercase tracking-[0.2em] px-3 pb-2 pt-4">Finance</p>
+
+                <button onclick="switchView('view-debtors')" data-view="view-debtors" id="nav-view-debtors"
+                    class="app-nav-btn w-full flex items-center gap-3 px-3 py-2.5 hover:bg-white/8 text-slate-400 hover:text-white rounded-xl text-left transition-all text-sm font-semibold group">
+                    <i class="fa-solid fa-wallet nav-icon w-4 text-center text-slate-500 group-hover:text-indigo-400 transition-colors"></i>
+                    Debtors & Sync
+                </button>
+
+                <button onclick="switchView('view-billing')" data-view="view-billing" id="nav-view-billing"
+                    class="app-nav-btn w-full flex items-center gap-3 px-3 py-2.5 hover:bg-white/8 text-slate-400 hover:text-white rounded-xl text-left transition-all text-sm font-semibold group">
+                    <i class="fa-solid fa-file-invoice-dollar nav-icon w-4 text-center text-slate-500 group-hover:text-indigo-400 transition-colors"></i>
+                    Billing
+                </button>
+
+                <p class="text-[9px] font-black text-slate-600 uppercase tracking-[0.2em] px-3 pb-2 pt-4">System</p>
+
+                <button onclick="switchView('view-settings')" data-view="view-settings" id="nav-view-settings"
+                    class="app-nav-btn w-full flex items-center gap-3 px-3 py-2.5 hover:bg-white/8 text-slate-400 hover:text-white rounded-xl text-left transition-all text-sm font-semibold group">
+                    <i class="fa-solid fa-gear nav-icon w-4 text-center text-slate-500 group-hover:text-indigo-400 transition-colors"></i>
+                    Settings
+                </button>
+            </nav>
+
+            <!-- User block at bottom -->
+            <div class="flex-shrink-0 p-4 border-t border-white/5">
+                <div class="flex items-center gap-3">
+                    <div id="sidebarUserAvatar" class="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center font-black text-white text-sm flex-shrink-0 shadow-lg">
+                        U
+                    </div>
+                    <div class="flex-1 min-w-0">
+                        <p id="sidebarUserName" class="text-sm font-bold text-white truncate">User</p>
+                        <p class="text-[10px] text-slate-500 font-medium">Office OS Member</p>
+                    </div>
+                    <button onclick="logout()" class="text-slate-600 hover:text-red-400 transition-colors flex-shrink-0" title="Logout">
+                        <i class="fa-solid fa-right-from-bracket text-sm"></i>
+                    </button>
+                </div>
+            </div>
+        </aside>
+
+        <!-- ==================== MAIN CONTENT ==================== -->
+        <main class="flex-1 flex flex-col min-w-0 bg-slate-50 relative no-print md:ml-0 overflow-hidden">
+
+            <!-- Header -->
+            <header class="h-14 bg-white border-b border-slate-100 flex items-center justify-between px-4 md:px-6 z-10 flex-shrink-0 no-print">
+                <div class="flex items-center gap-3 flex-1 min-w-0">
+                    <button onclick="toggleSidebar()" class="md:hidden text-slate-500 hover:text-slate-800 transition-colors w-9 h-9 flex items-center justify-center rounded-xl hover:bg-slate-100" title="Menu">
+                        <i class="fa-solid fa-bars text-base"></i>
+                    </button>
+                    <div class="relative max-w-xs w-full hidden sm:block">
+                        <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs pointer-events-none"></i>
+                        <input type="text" id="headerSearchInput" onkeyup="executeGlobalSearch()" placeholder="Search this module..." class="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-300 transition-all font-medium text-slate-700 placeholder:text-slate-400">
+                    </div>
+                </div>
+                <div class="flex items-center gap-2 ml-4 flex-shrink-0">
+                    <button onclick="globalRefresh()" id="globalRefreshBtn" title="Refresh Data"
+                        class="w-9 h-9 flex items-center justify-center text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all">
+                        <i class="fa-solid fa-rotate-right text-sm"></i>
+                    </button>
+                    <div class="w-px h-5 bg-slate-200 mx-1"></div>
+                    <p id="userNameDisplay" class="text-sm font-bold text-slate-700 hidden sm:block mr-1">Name</p>
+                    <div id="headerUserAvatar" class="w-8 h-8 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center font-black text-white text-xs shadow-sm cursor-default select-none">
+                        U
+                    </div>
+                    <button onclick="logout()" title="Logout" class="w-8 h-8 flex items-center justify-center text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all ml-1">
+                        <i class="fa-solid fa-right-from-bracket text-sm"></i>
+                    </button>
+                </div>
+            </header>
+
+            <!-- View Container -->
+            <div class="flex-1 overflow-hidden relative flex flex-col">
+                <?!= include('Mod_Core'); ?>
+                <?!= include('Mod_Recovery'); ?>
+
+                <?!= include('UI_ClientProfile'); ?>
+                <?!= include('UI_Tasks'); ?>
+                <?!= include('UI_Billing'); ?>
+                <?!= include('UI_Compliance_Recovery'); ?>
+            </div>
+
+        </main>
+    </div>
+
+    <?!= include('Logic_Core'); ?>
+    <?!= include('Logic_CRM'); ?>
+    <?!= include('Logic_Audits_Tasks'); ?>
+    <?!= include('Logic_Compliance'); ?>
+    <?!= include('Logic_Billing'); ?>
+    <?!= include('Logic_Recovery'); ?>
+    <?!= include('Logic_PageSettings'); ?>
+
+    <script>
+        // Populate sidebar avatar + name when user logs in
+        function updateShellUserDisplay(name) {
+            const initials = name ? name.trim().split(' ').map(p => p[0]).join('').toUpperCase().slice(0, 2) : 'U';
+            const avatarEls = [document.getElementById('sidebarUserAvatar'), document.getElementById('headerUserAvatar')];
+            avatarEls.forEach(el => { if (el) el.innerText = initials; });
+            const nameEl = document.getElementById('sidebarUserName');
+            if (nameEl) nameEl.innerText = name || 'User';
+        }
+    </script>
+
+</body>
+</html>

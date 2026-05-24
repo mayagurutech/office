@@ -1,0 +1,459 @@
+<script>
+    console.log("Executing Logic_Billing.html script tag...");
+    // ==========================================
+    // MODULE: BILLING & INVOICING
+    // ==========================================
+
+    let globalInvoicesList = [];
+
+    window.getNextInvoiceNumber = async function(firmId) {
+        const currentYearStr = new Date().getFullYear().toString().substr(-2);
+        let prefix = `INV-${currentYearStr}-`;
+        let startingNo = 1;
+        let queryPattern = `INV-${currentYearStr}-%`;
+
+        if (firmId) {
+            const { data: firm } = await supabaseClient.from('billing_firms').select('gstin').eq('id', firmId).single();
+            if (firm && firm.gstin) {
+                try {
+                    const json = JSON.parse(firm.gstin);
+                    if (json.starting_bill_number) startingNo = parseInt(json.starting_bill_number, 10);
+                    if (json.bill_prefix) {
+                        prefix = json.bill_prefix;
+                        queryPattern = `${prefix}%`;
+                    }
+                } catch (e) {
+                    // Not JSON
+                }
+            }
+        }
+
+        const { data } = await supabaseClient.from('invoices').select('bill_number').ilike('bill_number', queryPattern).order('generated_date', { ascending: false }).limit(50); 
+        let maxNum = 0;
+        if (data && data.length > 0) {
+            data.forEach(inv => { 
+                if (inv.bill_number) { 
+                    // Extract number from the end of the string
+                    const match = inv.bill_number.match(/(\d+)$/);
+                    if (match) {
+                        const num = parseInt(match[1], 10); 
+                        if (!isNaN(num) && num > maxNum) maxNum = num; 
+                    }
+                } 
+            }); 
+        }
+
+        const nextNum = Math.max(maxNum + 1, startingNo);
+        // If it uses standard prefix, pad it to 3 digits. If custom, maybe just append or pad? Let's pad just in case.
+        return `${prefix}${nextNum.toString().padStart(3, '0')}`;
+    }
+
+    window.loadBillingData = async function() {
+        const tbody = document.getElementById('billing-table-body'); tbody.innerHTML = '<tr><td colspan="6" class="text-center py-8 text-gray-500"><i class="fa-solid fa-spinner fa-spin"></i> Loading...</td></tr>';
+        
+        try {
+            let { data, error } = await supabaseClient.from('invoices').select('*, clients(client_id, display_name, pan_number), billing_firms(firm_name, gstin)').order('generated_date', { ascending: false });
+            
+            if (error) {
+                alert("Primary query failed: " + error.message);
+                const fallback = await supabaseClient.from('invoices').select('*, clients(client_id, display_name, pan_number)').order('generated_date', { ascending: false });
+                
+                if (fallback.error) {
+                    alert("Fallback query failed: " + fallback.error.message);
+                }
+                data = fallback.data;
+            }
+            
+            globalInvoicesList = data || [];
+            window.filterBills();
+        } catch (err) {
+            alert("Exception loading invoices: " + err.message);
+        }
+    }
+
+    window.renderBillsTable = function(invoices) {
+        const tbody = document.getElementById('billing-table-body'); tbody.innerHTML = '';
+        if (!invoices || invoices.length === 0) { tbody.innerHTML = '<tr><td colspan="6" class="text-center py-8 text-gray-500">No invoices found.</td></tr>'; document.getElementById('total-unbilled').innerText = '\u20B90'; return; }
+        let totalInvoiced = 0;
+        invoices.forEach(inv => {
+            try {
+                const dateStr = new Date(inv.generated_date || inv.created_at || new Date()).toLocaleDateString('en-IN', {day:'numeric', month:'short', year:'numeric'});
+                const isCancelled = inv.status === 'Cancelled';
+                if (!isCancelled) totalInvoiced += parseFloat(inv.amount) || 0;
+                const rowStyle = isCancelled ? 'opacity-60 bg-gray-50' : 'hover:bg-gray-50 transition';
+                const billNoDisplay = isCancelled ? `<span class="line-through text-gray-400">${inv.bill_number || 'N/A'}</span> <span class="text-red-500 text-xs font-bold bg-red-50 px-2 py-0.5 rounded ml-2">CANCELLED</span>` : `<span class="font-bold text-gray-800">${inv.bill_number || 'N/A'}</span>`;
+                const safeId = inv.invoice_id !== undefined ? inv.invoice_id : inv.id;
+                
+                const actionButtons = isCancelled ? `<button onclick='openInvoicePreview(${JSON.stringify(inv).replace(/'/g, "&#39;")})' class="bg-gray-200 text-gray-600 px-3 py-1.5 rounded-lg text-xs font-bold transition shadow-sm"><i class="fa-solid fa-eye mr-1"></i> View</button>` : `<div class="flex items-center justify-end gap-2"><button onclick='openInvoicePreview(${JSON.stringify(inv).replace(/'/g, "&#39;")})' class="bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white border border-indigo-200 px-3 py-1.5 rounded-lg text-xs font-bold transition shadow-sm" title="View / Print"><i class="fa-solid fa-print"></i></button><button onclick="editInvoice('${safeId}')" class="bg-blue-50 text-blue-600 hover:bg-blue-600 hover:text-white border border-blue-200 px-3 py-1.5 rounded-lg text-xs font-bold transition shadow-sm" title="Edit Bill"><i class="fa-solid fa-pen"></i></button><button onclick="cancelInvoice('${safeId}')" class="bg-red-50 text-red-600 hover:bg-red-600 hover:text-white border border-red-200 px-3 py-1.5 rounded-lg text-xs font-bold transition shadow-sm" title="Cancel Bill"><i class="fa-solid fa-ban"></i></button></div>`;
+                tbody.innerHTML += `<tr class="border-b border-gray-100 ${rowStyle}"><td class="px-3 py-3 text-sm">${billNoDisplay}</td><td class="px-3 py-3 font-bold text-blue-600 hover:underline cursor-pointer" onclick="openUniversalClientProfile('${inv.client_id}')">${inv.clients?.display_name || 'Unknown'}</td><td class="px-3 py-3 text-gray-600">${inv.service_name}</td><td class="px-3 py-3 text-gray-500 whitespace-nowrap">${dateStr}</td><td class="px-3 py-3 font-bold text-gray-800">&#8377;${parseFloat(inv.amount).toLocaleString('en-IN')}</td><td class="px-3 py-3 text-right">${actionButtons}</td></tr>`;
+            } catch (e) {
+                console.error("Error rendering invoice:", e);
+                alert("Error rendering invoice: " + e.message);
+            }
+        });
+        document.getElementById('total-unbilled').innerText = '\u20B9' + totalInvoiced.toLocaleString('en-IN');
+    }
+
+    window.filterBills = function() {
+        const globalQuery = document.getElementById('billSearchInput').value.toLowerCase();
+        const noQuery = document.getElementById('filterBillNo').value.toLowerCase();
+        const clientQuery = document.getElementById('filterClientName').value.toLowerCase();
+        const serviceQuery = document.getElementById('filterService').value.toLowerCase();
+        const startDateQuery = document.getElementById('filterStartDate').value;
+        const endDateQuery = document.getElementById('filterEndDate').value;
+        const amountQuery = document.getElementById('filterAmount').value.toLowerCase();
+        const statusFilter = document.getElementById('billStatusFilter') ? document.getElementById('billStatusFilter').value : 'active';
+
+        const filtered = globalInvoicesList.filter(inv => {
+            const isCancelled = inv.status === 'Cancelled';
+            if (statusFilter === 'active' && isCancelled) return false;
+            if (statusFilter === 'cancelled' && !isCancelled) return false;
+
+            const billNo = (inv.bill_number || '').toLowerCase();
+            const clientName = (inv.clients?.display_name || '').toLowerCase();
+            const service = (inv.service_name || '').toLowerCase();
+            
+            const d = new Date(inv.generated_date || inv.created_at);
+            
+            const amount = inv.amount ? inv.amount.toString() : '';
+
+            // Global search checks bill no or client name
+            const globalMatch = !globalQuery || billNo.includes(globalQuery) || clientName.includes(globalQuery);
+            
+            // Column filters
+            const noMatch = !noQuery || billNo.includes(noQuery);
+            const clientMatch = !clientQuery || clientName.includes(clientQuery);
+            const serviceMatch = !serviceQuery || service.includes(serviceQuery);
+            
+            let dateMatch = true;
+            if (startDateQuery || endDateQuery) {
+                const invDate = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+                if (startDateQuery) {
+                    const startD = new Date(startDateQuery);
+                    if (invDate < new Date(startD.getFullYear(), startD.getMonth(), startD.getDate()).getTime()) dateMatch = false;
+                }
+                if (endDateQuery) {
+                    const endD = new Date(endDateQuery);
+                    if (invDate > new Date(endD.getFullYear(), endD.getMonth(), endD.getDate()).getTime()) dateMatch = false;
+                }
+            }
+            
+            const amountMatch = !amountQuery || amount.includes(amountQuery);
+
+            return globalMatch && noMatch && clientMatch && serviceMatch && dateMatch && amountMatch;
+        });
+        
+        window.currentFilteredBills = filtered;
+        window.renderBillsTable(filtered);
+    }
+    
+    window.exportBillingToCSV = function() {
+        const bills = window.currentFilteredBills || globalInvoicesList || [];
+        if (bills.length === 0) {
+            alert("No bills available to export.");
+            return;
+        }
+
+        // Define CSV headers
+        const headers = ['Bill No', 'Client Name', 'Service Description', 'Date', 'Amount', 'Status'];
+        
+        // Map data to rows
+        const rows = bills.map(inv => {
+            const billNo = inv.bill_number || '';
+            const clientName = inv.clients?.display_name ? `"${inv.clients.display_name.replace(/"/g, '""')}"` : '';
+            const service = inv.service_name ? `"${inv.service_name.replace(/"/g, '""')}"` : '';
+            
+            const d = new Date(inv.generated_date || inv.created_at);
+            const dateStr = d.toLocaleDateString('en-IN', {day:'numeric', month:'short', year:'numeric'});
+            
+            const amount = inv.amount || 0;
+            const status = inv.status || 'GENERATED';
+
+            return [billNo, clientName, service, dateStr, amount, status].join(',');
+        });
+
+        // Combine headers and rows
+        const csvContent = headers.join(',') + '\n' + rows.join('\n');
+        
+        // Create Blob and trigger download
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement("a");
+        const url = URL.createObjectURL(blob);
+        link.setAttribute("href", url);
+        link.setAttribute("download", "Billing_Export_" + new Date().toISOString().split('T')[0] + ".csv");
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }
+    
+    window.openAutoInvoiceModal = function(task) { 
+        window.autoInvoiceTask = task; 
+        if(task) {
+            document.getElementById('invClientName').innerText = task.clients?.display_name || 'Unknown Client';
+            document.getElementById('invServiceName').innerText = task.services?.service_type || task.custom_task_name || 'Task';
+            
+            if(task.estimated_fee && task.estimated_fee > 0) {
+                document.getElementById('invAmount').value = task.estimated_fee;
+            } else {
+                document.getElementById('invAmount').value = 0;
+            }
+        }
+        document.getElementById('autoInvoiceOverlay').classList.remove('hidden'); 
+    }
+    
+    window.closeAutoInvoiceModal = function() { 
+        document.getElementById('autoInvoiceOverlay').classList.add('hidden'); 
+        window.autoInvoiceTask = null;
+        if (typeof globalRefresh === 'function') globalRefresh();
+    }
+    
+    window.generateInvoice = async function() {
+        const amount = document.getElementById('invAmount').value; 
+        const btn = document.getElementById('generateInvBtn'); 
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Generating...';
+        
+        let task = window.autoInvoiceTask;
+        if (!task) {
+            alert("Task data lost. Please create invoice manually.");
+            btn.innerHTML = originalText;
+            return;
+        }
+
+        try {
+            const billNo = await getNextInvoiceNumber();
+            const { error } = await supabaseClient.from('invoices').insert([{ 
+                task_id: task.task_id || null, 
+                client_id: task.client_id, 
+                service_name: task.services?.service_type || task.custom_task_name || 'General Service', 
+                amount: parseFloat(amount) || 0, 
+                status: 'Unpaid', 
+                bill_number: billNo, 
+                generated_date: new Date().toISOString() 
+            }]);
+            
+            if (error) throw error;
+            document.getElementById('autoInvoiceOverlay').classList.add('hidden'); 
+            window.autoInvoiceTask = null;
+            if (typeof globalRefresh === 'function') globalRefresh();
+        } catch (err) { 
+            alert("Database Error: " + err.message); 
+            btn.innerHTML = originalText; 
+        }
+    }
+
+    window.openCreateBillModal = async function() {
+        document.getElementById('createBillModalTitle').innerHTML = '<i class="fa-solid fa-file-invoice mr-2"></i> Create New Bill'; document.getElementById('editBillId').value = ''; 
+        document.getElementById('proposedBillNumberContainer').classList.add('hidden');
+        const firmSelect = document.getElementById('billFirmSelect'); firmSelect.innerHTML = '<option value="">-- Select Billing Firm --</option>';
+        const { data: firms } = await supabaseClient.from('billing_firms').select('*'); if(firms) firms.forEach(f => firmSelect.innerHTML += `<option value="${f.id}">${f.firm_name}</option>`);
+        const datalist = document.getElementById('billClientDatalist'); datalist.innerHTML = ''; globalClientsList.forEach(c => datalist.innerHTML += `<option value="${c.display_name}"></option>`);
+        document.getElementById('billClientSearch').value = ''; document.getElementById('billServiceDetails').value = ''; document.getElementById('billAmount').value = '0';
+        document.getElementById('createBillModal').classList.remove('hidden');
+    }
+
+    window.updateProposedBillNumber = async function() {
+        const firmId = document.getElementById('billFirmSelect').value;
+        const container = document.getElementById('proposedBillNumberContainer');
+        const display = document.getElementById('proposedBillNumberDisplay');
+        if (!firmId) {
+            container.classList.add('hidden');
+            return;
+        }
+        
+        display.innerHTML = '<i class="fa-solid fa-spinner fa-spin text-sm"></i>';
+        container.classList.remove('hidden');
+        
+        const proposedNum = await getNextInvoiceNumber(firmId);
+        display.innerText = proposedNum;
+    }
+
+    window.editInvoice = async function(id) {
+        const inv = globalInvoicesList.find(i => i.invoice_id == id || i.id == id); if(!inv) return;
+        document.getElementById('createBillModalTitle').innerHTML = '<i class="fa-solid fa-pen mr-2"></i> Edit Bill Details'; document.getElementById('editBillId').value = inv.invoice_id !== undefined ? inv.invoice_id : inv.id;
+        
+        const container = document.getElementById('proposedBillNumberContainer');
+        const display = document.getElementById('proposedBillNumberDisplay');
+        container.classList.remove('hidden');
+        display.innerText = inv.bill_number;
+
+        const firmSelect = document.getElementById('billFirmSelect'); firmSelect.innerHTML = '<option value="">-- Select Billing Firm --</option>';
+        const { data: firms } = await supabaseClient.from('billing_firms').select('*'); if(firms) { firms.forEach(f => { const selected = inv.firm_id === f.id ? 'selected' : ''; firmSelect.innerHTML += `<option value="${f.id}" ${selected}>${f.firm_name}</option>`; }); }
+        const datalist = document.getElementById('billClientDatalist'); datalist.innerHTML = ''; globalClientsList.forEach(c => datalist.innerHTML += `<option value="${c.display_name}"></option>`);
+        document.getElementById('billClientSearch').value = inv.clients?.display_name || ''; document.getElementById('billServiceDetails').value = inv.service_name; document.getElementById('billAmount').value = inv.amount;
+        document.getElementById('createBillModal').classList.remove('hidden');
+    }
+
+    window.cancelInvoice = async function(id) {
+        if(!confirm("Are you absolutely sure you want to cancel this bill?\n\nThe bill number will be permanently marked as CANCELLED.")) return;
+        const pkColumn = (globalInvoicesList.length > 0 && globalInvoicesList[0].invoice_id !== undefined) ? 'invoice_id' : 'id';
+        const { error } = await supabaseClient.from('invoices').update({ status: 'Cancelled' }).eq(pkColumn, id);
+        if (error) alert("Error cancelling bill: " + error.message);
+        globalRefresh();
+    }
+
+    window.closeCreateBillModal = function() { document.getElementById('createBillModal').classList.add('hidden'); }
+
+    window.saveManualBill = async function() {
+        const firmId = document.getElementById('billFirmSelect').value, clientName = document.getElementById('billClientSearch').value.trim(), service = document.getElementById('billServiceDetails').value.trim(), amt = document.getElementById('billAmount').value, editId = document.getElementById('editBillId').value;
+        if(!firmId || !clientName || !service || !amt) return alert("Please fill out all fields.");
+        const client = globalClientsList.find(c => c.display_name === clientName); if(!client) return alert("Please select a valid client from the dropdown.");
+        const btn = document.getElementById('saveManualBillBtn'); const originalText = btn.innerHTML; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving...';
+
+        try {
+            const pkColumn = (globalInvoicesList.length > 0 && globalInvoicesList[0].invoice_id !== undefined) ? 'invoice_id' : 'id';
+            if (editId) {
+                const { error } = await supabaseClient.from('invoices').update({ client_id: client.client_id, firm_id: firmId, service_name: service, amount: parseFloat(amt) }).eq(pkColumn, editId);
+                if (error) throw error;
+            } else {
+                const billNo = await getNextInvoiceNumber(firmId);
+                const { error } = await supabaseClient.from('invoices').insert([{ client_id: client.client_id, firm_id: firmId, service_name: service, amount: parseFloat(amt), status: 'Unpaid', bill_number: billNo, generated_date: new Date().toISOString() }]);
+                if (error) throw error;
+            }
+            window.closeCreateBillModal(); globalRefresh();
+        } catch(err) { console.error(err); alert("Database Error: " + err.message); btn.innerHTML = originalText; }
+    }
+
+    window.printInvoice = function() {
+        const element = document.getElementById('print-invoice-area');
+        
+        // Create an iframe for isolated printing
+        const iframe = document.createElement('iframe');
+        iframe.style.position = 'fixed';
+        iframe.style.right = '0';
+        iframe.style.bottom = '0';
+        iframe.style.width = '0';
+        iframe.style.height = '0';
+        iframe.style.border = '0';
+        document.body.appendChild(iframe);
+        
+        const doc = iframe.contentWindow.document;
+        
+        doc.write('<html><head><title>Invoice</title>');
+        
+        // Copy Tailwind script
+        doc.write('<script src="https://cdn.tailwindcss.com"><\/script>');
+        
+        // Copy all styles and links from main document
+        const styles = document.querySelectorAll('link, style');
+        styles.forEach(style => doc.write(style.outerHTML));
+        
+        doc.write('</head><body style="background: white;">');
+        doc.write(element.outerHTML);
+        doc.write('</body></html>');
+        doc.close();
+        
+        // Wait for styles/Tailwind to parse and then print
+        iframe.contentWindow.focus();
+        setTimeout(() => {
+            iframe.contentWindow.print();
+            document.body.removeChild(iframe);
+        }, 800);
+    }
+
+    window.numberToWords = function(num) {
+        if (num === 0) return 'Zero';
+        const a = ['','One ','Two ','Three ','Four ', 'Five ','Six ','Seven ','Eight ','Nine ','Ten ','Eleven ','Twelve ','Thirteen ','Fourteen ','Fifteen ','Sixteen ','Seventeen ','Eighteen ','Nineteen '];
+        const b = ['', '', 'Twenty','Thirty','Forty','Fifty', 'Sixty','Seventy','Eighty','Ninety'];
+        if ((num = num.toString()).length > 9) return 'overflow';
+        let n = ('000000000' + num).substr(-9).match(/^(\d{2})(\d{2})(\d{2})(\d{1})(\d{2})$/);
+        if (!n) return; let str = '';
+        str += (n[1] != 0) ? (a[Number(n[1])] || b[n[1][0]] + ' ' + a[n[1][1]]) + 'Crore ' : '';
+        str += (n[2] != 0) ? (a[Number(n[2])] || b[n[2][0]] + ' ' + a[n[2][1]]) + 'Lakh ' : '';
+        str += (n[3] != 0) ? (a[Number(n[3])] || b[n[3][0]] + ' ' + a[n[3][1]]) + 'Thousand ' : '';
+        str += (n[4] != 0) ? (a[Number(n[4])] || b[n[4][0]] + ' ' + a[n[4][1]]) + 'Hundred ' : '';
+        str += (n[5] != 0) ? ((str != '') ? 'and ' : '') + (a[Number(n[5])] || b[n[5][0]] + ' ' + a[n[5][1]]) + 'Only' : 'Only';
+        return str.trim();
+    }
+
+    window.openInvoicePreview = function(inv) {
+        const watermark = document.getElementById('inv-cancelled-watermark');
+        const printBtn = document.getElementById('inv-prev-print-btn');
+        
+        if (inv.status === 'Cancelled') { watermark.classList.remove('hidden'); printBtn.classList.add('hidden'); } 
+        else { watermark.classList.add('hidden'); printBtn.classList.remove('hidden'); }
+
+        const d = new Date(inv.generated_date || inv.created_at);
+        document.getElementById('inv-prev-no').innerText = inv.bill_number || 'N/A';
+        document.getElementById('inv-prev-date').innerText = d.toLocaleDateString('en-IN', {day:'numeric', month:'short', year:'numeric'});
+        document.getElementById('inv-prev-firm').innerText = inv.billing_firms?.firm_name || 'Multifruit Services';
+        
+        const gstBox = document.getElementById('inv-prev-firm-gst-box');
+        let address = 'Vistaar, 2nd Floor, 366, Rachna Nagar<br>Bhopal - 462023'; // Default fallback
+        let notes = '1. Make all cheques payable to the firm above.\n2. E. & O.E. In case of any discrepancy kindly revert within 15 days.\n3. Subject to BHOPAL Jurisdiction Only.'; // Default terms
+        let bankDetails = 'Bank: ICICI Bank, Arera Colony, Bhopal\nA/C No: 327505000303\nIFSC: ICIC0003275'; // Default fallback
+        let gst = '';
+        let noGst = false;
+        let email = '';
+        let phone = '';
+        let logo = '';
+        let qr = '';
+
+        if (inv.billing_firms && inv.billing_firms.gstin && inv.billing_firms.gstin.trim() !== '') {
+            gst = inv.billing_firms.gstin;
+            try {
+                const json = JSON.parse(inv.billing_firms.gstin);
+                gst = json.gst || '';
+                if (json.no_gst === true) noGst = true;
+                if (json.address) address = json.address.replace(/\n/g, '<br>');
+                if (json.notes) notes = json.notes;
+                if (json.bank_details) bankDetails = json.bank_details;
+                if (json.email) email = json.email;
+                if (json.phone) phone = json.phone;
+                if (json.logo) logo = json.logo;
+                if (json.qr) qr = json.qr;
+            } catch (e) {
+                // Not JSON, use as plain GST
+            }
+        }
+
+        const logoEl = document.getElementById('inv-prev-logo');
+        if (logo) {
+            logoEl.src = logo;
+            logoEl.classList.remove('hidden');
+        } else {
+            logoEl.src = '';
+            logoEl.classList.add('hidden');
+        }
+
+        const qrEl = document.getElementById('inv-prev-qr');
+        if (qr) {
+            qrEl.src = qr;
+            qrEl.classList.remove('hidden');
+        } else {
+            qrEl.src = '';
+            qrEl.classList.add('hidden');
+        }
+
+        if (gst.trim() !== '' && !noGst) {
+            document.getElementById('inv-prev-gst').innerText = gst; gstBox.style.display = 'inline-block';
+        } else { gstBox.style.display = 'none'; }
+
+        const emailEl = document.getElementById('inv-prev-email');
+        if (email.trim() !== '') {
+            emailEl.style.display = 'block';
+            emailEl.querySelector('span').innerText = email;
+        } else { emailEl.style.display = 'none'; }
+
+        const phoneEl = document.getElementById('inv-prev-phone');
+        if (phone.trim() !== '') {
+            phoneEl.style.display = 'block';
+            phoneEl.querySelector('span').innerText = phone;
+        } else { phoneEl.style.display = 'none'; }
+
+        document.getElementById('inv-prev-address').innerHTML = address;
+        document.getElementById('inv-prev-terms').innerText = notes;
+        document.getElementById('inv-prev-bank').innerText = bankDetails;
+
+        document.getElementById('inv-prev-client').innerText = inv.clients?.display_name || 'Unknown Client';
+        document.getElementById('inv-prev-service').innerText = inv.service_name;
+        document.getElementById('inv-prev-amt').innerText = parseFloat(inv.amount).toLocaleString('en-IN', {minimumFractionDigits: 2});
+        document.getElementById('inv-prev-total').innerText = '₹' + parseFloat(inv.amount).toLocaleString('en-IN', {minimumFractionDigits: 2});
+        document.getElementById('inv-prev-words').innerText = "Rupees " + window.numberToWords(parseFloat(inv.amount));
+
+        document.getElementById('invoicePreviewModal').classList.remove('hidden');
+    }
+
+    window.closeInvoicePreview = function() { document.getElementById('invoicePreviewModal').classList.add('hidden'); }
+</script>
