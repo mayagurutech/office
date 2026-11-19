@@ -1113,7 +1113,18 @@
                 scale: 2, useCORS: true, backgroundColor: '#ffffff',
                 x: 0, y: 0, scrollX: 0, scrollY: 0,
                 width: clone.offsetWidth, height: clone.offsetHeight,
-                windowWidth: 820, windowHeight: clone.offsetHeight
+                windowWidth: 820, windowHeight: clone.offsetHeight,
+                // html2canvas lays text out inside a cloned iframe. If Inter hasn't loaded there
+                // yet, words are positioned with a narrower fallback font but drawn in Inter,
+                // which swallows the spaces. Wait for the font inside the clone first.
+                onclone: async (doc) => {
+                    if (!doc.fonts) return;
+                    const loads = [];
+                    ['400', '500', '600', '700', '800', '900'].forEach(w => {
+                        loads.push(doc.fonts.load(`${w} 16px Inter`), doc.fonts.load(`italic ${w} 16px Inter`));
+                    });
+                    await Promise.race([Promise.allSettled(loads).then(() => doc.fonts.ready), new Promise(r => setTimeout(r, 5000))]);
+                }
             });
             // Fit the whole invoice onto a single A4 page.
             const { jsPDF } = window.jspdf;
