@@ -1092,21 +1092,39 @@
         await window.openInvoicePreview(inv);
         const src = document.getElementById('print-invoice-area');
         const holder = document.createElement('div');
-        holder.style.cssText = 'position:fixed;left:-10000px;top:0;width:820px;background:#fff;';
+        // Render on-screen at (0,0) but behind the app (z-index) — off-screen positions make
+        // html2canvas crop the capture.
+        holder.style.cssText = 'position:absolute;left:0;top:0;width:820px;background:#fff;z-index:-9999;pointer-events:none;';
         const clone = src.cloneNode(true);
         clone.removeAttribute('id');
+        clone.style.width = '820px';
+        const fix = document.createElement('style');
+        fix.textContent = '.bill-pdf-render, .bill-pdf-render * { letter-spacing: normal !important; word-spacing: normal !important; font-variant-ligatures: none !important; font-feature-settings: normal !important; text-rendering: auto !important; }';
+        clone.classList.add('bill-pdf-render');
+        holder.appendChild(fix);
         holder.appendChild(clone);
         document.body.appendChild(holder);
+        const prevScroll = [window.scrollX, window.scrollY];
+        window.scrollTo(0, 0);
         try {
             await waitForImages(clone);
-            return await html2pdf().set({
-                margin: [6, 6, 6, 6],
-                image: { type: 'jpeg', quality: 0.95 },
-                html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff', scrollX: 0, scrollY: 0, windowWidth: 820 },
-                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-                pagebreak: { mode: ['avoid-all'] }
-            }).from(clone).outputPdf('blob');
+            if (document.fonts && document.fonts.ready) await document.fonts.ready;
+            const canvas = await html2canvas(clone, {
+                scale: 2, useCORS: true, backgroundColor: '#ffffff',
+                x: 0, y: 0, scrollX: 0, scrollY: 0,
+                width: clone.offsetWidth, height: clone.offsetHeight,
+                windowWidth: 820, windowHeight: clone.offsetHeight
+            });
+            // Fit the whole invoice onto a single A4 page.
+            const { jsPDF } = window.jspdf;
+            const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+            const pw = 210, ph = 297, m = 8;
+            const ratio = Math.min((pw - 2 * m) / canvas.width, (ph - 2 * m) / canvas.height);
+            const w = canvas.width * ratio, h = canvas.height * ratio;
+            pdf.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', (pw - w) / 2, m, w, h);
+            return pdf.output('blob');
         } finally {
+            window.scrollTo(prevScroll[0], prevScroll[1]);
             document.body.removeChild(holder);
         }
     }
@@ -1132,7 +1150,8 @@
         modal.style.visibility = 'hidden';
 
         try {
-            await loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js', 'html2pdf');
+            await loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js', 'html2canvas');
+            await loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js', 'jspdf');
             if (mode === 'zip') await loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js', 'JSZip');
 
             const zip = mode === 'zip' ? new JSZip() : null;
