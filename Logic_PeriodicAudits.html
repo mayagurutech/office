@@ -1,0 +1,953 @@
+<script>
+    // ==========================================
+    // MODULE: PERIODIC AUDITS
+    // Internal quarterly / monthly / half-yearly financial audits.
+    // Lives in its own tables (periodic_audit_*) so the annual Audit Status page is untouched.
+    // ==========================================
+
+    const PA_ITEM_STATUSES = ['Pending', 'Done', 'Query', 'N/A'];
+    const PA_FREQ_LABELS = { quarterly: 'Quarterly', monthly: 'Monthly', half_yearly: 'Half-Yearly' };
+    const PA_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+    const paState = {
+        fy: 'FY_2026_27',
+        templates: [],
+        engagements: [],
+        periodsByEng: {},     // engagement_id -> { period -> period row }
+        itemCounts: {},       // engagement_id -> { period -> { done, query, touched } }
+        drawer: null,         // { eng, period, items: { 'period|item_id' -> row } }
+        itemFilter: 'all',
+        upload: null,
+        addSelected: new Set()
+    };
+
+    function paEsc(v) {
+        return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    function paToday() {
+        const d = new Date();
+        d.setHours(0, 0, 0, 0);
+        return d;
+    }
+
+    function paParseDate(s) {
+        if (!s) return null;
+        const [y, m, d] = s.split('-').map(Number);
+        return new Date(y, m - 1, d);
+    }
+
+    function paFmtDate(s) {
+        const d = typeof s === 'string' ? paParseDate(s) : s;
+        if (!d) return '';
+        return `${d.getDate()} ${PA_MONTHS[d.getMonth()]}`;
+    }
+
+    function paFyLabel(fy) {
+        return (fy || '').replace(/^FY_(\d{4})_(\d{2})$/, 'FY $1-$2');
+    }
+
+    // Periods of an Indian financial year (April–March) for a frequency.
+    function paGetPeriods(frequency, fy) {
+        const startYear = parseInt((fy || '').split('_')[1], 10) || new Date().getFullYear();
+        const make = (key, label, sm, em) => {
+            const start = new Date(startYear, sm, 1);
+            const end = new Date(startYear, em + 1, 0);
+            const long = sm === em
+                ? `${PA_MONTHS[start.getMonth()]} ${start.getFullYear()}`
+                : `${PA_MONTHS[start.getMonth()]} ${start.getFullYear()} – ${PA_MONTHS[end.getMonth()]} ${end.getFullYear()}`;
+            return { key, label, long, start, end };
+        };
+        if (frequency === 'monthly') {
+            return Array.from({ length: 12 }, (_, i) => {
+                const m = 3 + i; // April = month index 3
+                const key = 'M' + String((m % 12) + 1).padStart(2, '0');
+                return make(key, PA_MONTHS[m % 12], m, m);
+            });
+        }
+        if (frequency === 'half_yearly') {
+            return [make('H1', 'H1', 3, 8), make('H2', 'H2', 9, 14)];
+        }
+        return [make('Q1', 'Q1', 3, 5), make('Q2', 'Q2', 6, 8), make('Q3', 'Q3', 9, 11), make('Q4', 'Q4', 12, 14)];
+    }
+
+    function paTemplate(id) {
+        return paState.templates.find(t => t.id === id);
+    }
+
+    function paClientName(clientId) {
+        const c = (window.globalClientsList || []).find(x => x.client_id === clientId);
+        return c ? c.display_name : 'Unknown client';
+    }
+
+    function paUserName(userId) {
+        const u = (globalTeamMembers || []).find(x => x.id === userId);
+        return u ? u.name : '';
+    }
+
+    // Derived state of one period of one engagement.
+    function paPeriodInfo(eng, p) {
+        const row = (paState.periodsByEng[eng.id] || {})[p.key] || {};
+        const total = (paTemplate(eng.template_id)?.items || []).length;
+        const counts = (paState.itemCounts[eng.id] || {})[p.key] || { done: 0, query: 0, touched: 0 };
+        const status = row.status || 'Not Started';
+        const today = paToday();
+        const due = paParseDate(row.due_date);
+        const completed = status === 'Completed';
+        const ended = p.end < today;
+        const running = p.start <= today && !ended;
+        const overdue = !completed && due && due < today;
+        const weekAhead = new Date(today); weekAhead.setDate(weekAhead.getDate() + 7);
+        const dueSoon = !completed && due && due >= today && due <= weekAhead;
+        return {
+            ...p, row, status, total, counts, due, completed, ended, running, overdue, dueSoon,
+            pending: ended && !completed,
+            noDue: !completed && !due && (ended || running)
+        };
+    }
+
+    // The period that most needs attention: earliest ended-but-incomplete, else the running one.
+    function paFocusPeriod(infos) {
+        return infos.find(i => i.pending) || infos.find(i => i.running) || infos.find(i => !i.completed) || infos[infos.length - 1];
+    }
+
+    // ---------- LOAD ----------
+    async function loadPeriodicAuditsData() {
+        const container = document.getElementById('pa-list-container');
+        if (container) container.innerHTML = '<div class="text-center p-8 text-slate-500"><i class="fa-solid fa-spinner fa-spin text-2xl mb-2"></i><br>Loading periodic audits...</div>';
+
+        paState.fy = document.getElementById('paFyFilter')?.value || 'FY_2026_27';
+        try {
+            if (!window.globalClientsList || window.globalClientsList.length === 0) await refreshGlobalCache();
+            await fetchTeamMembers();
+
+            const [tplRes, engRes] = await Promise.all([
+                supabaseClient.from('periodic_audit_templates').select('*').order('name'),
+                supabaseClient.from('periodic_audit_engagements').select('*').eq('fy', paState.fy)
+            ]);
+            if (tplRes.error) throw tplRes.error;
+            if (engRes.error) throw engRes.error;
+            paState.templates = tplRes.data || [];
+            paState.engagements = engRes.data || [];
+
+            const [perRes, itemRes] = await Promise.all([
+                fetchAllRows((from, to) => supabaseClient
+                    .from('periodic_audit_periods')
+                    .select('*, periodic_audit_engagements!inner(fy)')
+                    .eq('periodic_audit_engagements.fy', paState.fy)
+                    .order('id')
+                    .range(from, to)),
+                fetchAllRows((from, to) => supabaseClient
+                    .from('periodic_audit_item_status')
+                    .select('engagement_id, period, item_id, status, periodic_audit_engagements!inner(fy)')
+                    .eq('periodic_audit_engagements.fy', paState.fy)
+                    .order('id')
+                    .range(from, to))
+            ]);
+            if (perRes.error) throw perRes.error;
+            if (itemRes.error) throw itemRes.error;
+
+            paState.periodsByEng = {};
+            (perRes.data || []).forEach(r => {
+                delete r.periodic_audit_engagements;
+                (paState.periodsByEng[r.engagement_id] = paState.periodsByEng[r.engagement_id] || {})[r.period] = r;
+            });
+
+            paState.itemCounts = {};
+            const validIds = {};
+            paState.engagements.forEach(e => {
+                validIds[e.id] = new Set((paTemplate(e.template_id)?.items || []).map(i => i.id));
+            });
+            (itemRes.data || []).forEach(r => {
+                if (!validIds[r.engagement_id] || !validIds[r.engagement_id].has(r.item_id)) return; // item removed from checklist
+                const byP = (paState.itemCounts[r.engagement_id] = paState.itemCounts[r.engagement_id] || {});
+                const c = (byP[r.period] = byP[r.period] || { done: 0, query: 0, touched: 0 });
+                if (r.status === 'Done' || r.status === 'N/A') c.done++;
+                if (r.status === 'Query') c.query++;
+                if (r.status !== 'Pending') c.touched++;
+            });
+
+            paPopulateTemplateFilter();
+            paRenderList();
+        } catch (err) {
+            console.error('Error loading periodic audits:', err);
+            if (container) container.innerHTML = `<div class="text-center p-8 text-rose-600 font-bold bg-rose-50 rounded-2xl border border-rose-100">Could not load periodic audits: ${paEsc(err.message || err)}</div>`;
+        }
+    }
+
+    function paPopulateTemplateFilter() {
+        const sel = document.getElementById('paTemplateFilter');
+        if (!sel) return;
+        const saved = sel.value;
+        sel.innerHTML = '<option value="">All Checklists</option>' + paState.templates.map(t => `<option value="${t.id}">${paEsc(t.name)}</option>`).join('');
+        if (paState.templates.some(t => t.id === saved)) sel.value = saved;
+    }
+
+    // ---------- LIST ----------
+    function paSetStatusFilter(v) {
+        const sel = document.getElementById('paStatusFilter');
+        if (sel) sel.value = v;
+        paRenderList();
+    }
+
+    function paRenderList() {
+        const container = document.getElementById('pa-list-container');
+        if (!container) return;
+
+        const assign = document.getElementById('paAssignFilter')?.value || 'all';
+        const tplFilter = document.getElementById('paTemplateFilter')?.value || '';
+        const statusFilter = document.getElementById('paStatusFilter')?.value || 'all';
+        const search = (document.getElementById('paSearchInput')?.value || '').toLowerCase().trim();
+
+        const rows = paState.engagements.map(eng => {
+            const infos = paGetPeriods(eng.frequency, eng.fy).map(p => paPeriodInfo(eng, p));
+            return { eng, infos, focus: paFocusPeriod(infos), name: paClientName(eng.client_id) };
+        });
+
+        // Tiles reflect all active audits, regardless of the other filters.
+        const active = rows.filter(r => !r.eng.is_archived);
+        const countP = fn => active.reduce((s, r) => s + r.infos.filter(fn).length, 0);
+        document.getElementById('paStatActive').innerText = active.length;
+        document.getElementById('paStatPending').innerText = countP(i => i.pending);
+        document.getElementById('paStatOverdue').innerText = countP(i => i.overdue);
+        document.getElementById('paStatDueSoon').innerText = countP(i => i.dueSoon);
+        document.querySelectorAll('.pa-tile').forEach(t => {
+            t.classList.toggle('ring-2', t.dataset.filter === statusFilter);
+            t.classList.toggle('ring-emerald-400', t.dataset.filter === statusFilter);
+        });
+
+        const myId = currentUser ? currentUser.id : null;
+        let list = rows.filter(r => {
+            if (assign === 'archived') { if (!r.eng.is_archived) return false; }
+            else if (r.eng.is_archived) return false;
+            if (assign === 'mine' && r.eng.assigned_to !== myId) return false;
+            if (tplFilter && r.eng.template_id !== tplFilter) return false;
+            if (search && !r.name.toLowerCase().includes(search)) return false;
+            if (statusFilter === 'pending' && !r.infos.some(i => i.pending)) return false;
+            if (statusFilter === 'overdue' && !r.infos.some(i => i.overdue)) return false;
+            if (statusFilter === 'due_soon' && !r.infos.some(i => i.dueSoon)) return false;
+            if (statusFilter === 'no_due' && !r.infos.some(i => i.noDue)) return false;
+            if (statusFilter === 'up_to_date' && r.infos.some(i => i.pending || i.overdue)) return false;
+            return true;
+        });
+
+        // Overdue first, then most pending periods, then name.
+        list.sort((a, b) => {
+            const ao = a.infos.some(i => i.overdue) ? 1 : 0, bo = b.infos.some(i => i.overdue) ? 1 : 0;
+            if (ao !== bo) return bo - ao;
+            const ap = a.infos.filter(i => i.pending).length, bp = b.infos.filter(i => i.pending).length;
+            if (ap !== bp) return bp - ap;
+            return a.name.localeCompare(b.name);
+        });
+
+        if (paState.templates.length === 0) {
+            container.innerHTML = `
+                <div class="text-center py-14 bg-white rounded-2xl border border-dashed border-slate-200">
+                    <div class="w-14 h-14 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto mb-4"><i class="fa-solid fa-file-excel text-2xl"></i></div>
+                    <h3 class="text-lg font-black text-slate-800">Start by uploading a checklist</h3>
+                    <p class="text-sm text-slate-500 mt-1 mb-5">Upload your periodic audit checklist from Excel, then add clients to it.</p>
+                    <button onclick="paOpenTemplatesModal()" class="bg-emerald-600 text-white px-5 py-2.5 rounded-xl font-bold hover:bg-emerald-700 transition text-sm"><i class="fa-solid fa-upload mr-2"></i>Upload Checklist</button>
+                </div>`;
+            return;
+        }
+        if (list.length === 0) {
+            const msg = paState.engagements.length === 0
+                ? `No clients added for ${paFyLabel(paState.fy)} yet. Use <b>Add Clients</b> to start.`
+                : 'No audits match these filters.';
+            container.innerHTML = `<div class="text-center py-12 text-slate-400 text-sm font-bold bg-white rounded-2xl border border-dashed border-slate-200">${msg}</div>`;
+            return;
+        }
+
+        container.innerHTML = list.map(r => paRenderCard(r)).join('');
+    }
+
+    function paPillClass(i) {
+        if (i.completed) return 'bg-emerald-500 text-white border-emerald-500';
+        if (i.overdue) return 'bg-rose-50 text-rose-700 border-rose-300';
+        if (i.status === 'Under Review') return 'bg-amber-50 text-amber-700 border-amber-300';
+        if (i.status === 'In Progress' || i.counts.touched > 0) return 'bg-indigo-50 text-indigo-700 border-indigo-200';
+        if (i.pending) return 'bg-amber-50 text-amber-700 border-amber-200';
+        if (i.running) return 'bg-white text-slate-700 border-slate-300';
+        return 'bg-slate-50 text-slate-400 border-dashed border-slate-200';
+    }
+
+    function paPillIcon(i) {
+        if (i.completed) return '<i class="fa-solid fa-check text-[9px]"></i>';
+        if (i.overdue) return '<i class="fa-solid fa-triangle-exclamation text-[9px]"></i>';
+        if (i.counts.query > 0) return '<i class="fa-solid fa-circle-question text-[9px]"></i>';
+        return '';
+    }
+
+    function paRenderCard(r) {
+        const { eng, infos, focus } = r;
+        const tpl = paTemplate(eng.template_id);
+        const assignee = paUserName(eng.assigned_to) || 'Unassigned';
+        const pct = focus.total ? Math.round(focus.counts.done / focus.total * 100) : 0;
+        const pendingCount = infos.filter(i => i.pending).length;
+
+        const pills = infos.map(i => {
+            const tip = `${i.long} · ${i.status}${i.row.due_date ? ' · Due ' + paFmtDate(i.row.due_date) : ''}${i.total ? ' · ' + i.counts.done + '/' + i.total : ''}`;
+            const isFocus = i.key === focus.key;
+            return `<button onclick="event.stopPropagation(); paOpenDrawer('${eng.id}', '${i.key}')" title="${paEsc(tip)}"
+                class="px-2.5 py-1 rounded-lg border text-[11px] font-black inline-flex items-center gap-1 transition hover:scale-105 ${paPillClass(i)} ${isFocus ? 'ring-2 ring-offset-1 ring-emerald-300' : ''}">${paPillIcon(i)}${i.label}</button>`;
+        }).join('');
+
+        let dueBadge = '';
+        if (focus.overdue) dueBadge = `<span class="text-[10px] font-black text-rose-700 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-md">Overdue · ${paFmtDate(focus.row.due_date)}</span>`;
+        else if (focus.row.due_date && !focus.completed) dueBadge = `<span class="text-[10px] font-black ${focus.dueSoon ? 'text-indigo-700 bg-indigo-50 border-indigo-200' : 'text-slate-600 bg-slate-50 border-slate-200'} border px-2 py-0.5 rounded-md">Due ${paFmtDate(focus.row.due_date)}</span>`;
+        else if (focus.noDue) dueBadge = `<span class="text-[10px] font-bold text-slate-400 bg-slate-50 border border-dashed border-slate-200 px-2 py-0.5 rounded-md">No due date</span>`;
+
+        return `
+            <div onclick="paOpenDrawer('${eng.id}', '${focus.key}')" class="bg-white rounded-2xl border border-slate-100 shadow-sm hover:shadow-md hover:border-emerald-200 transition cursor-pointer p-4 md:p-5">
+                <div class="flex flex-col lg:flex-row lg:items-center gap-4">
+                    <div class="lg:w-1/4 min-w-0">
+                        <h4 class="font-black text-slate-800 truncate">${paEsc(r.name)}</h4>
+                        <p class="text-[11px] font-bold text-slate-400 mt-0.5 truncate">${paEsc(tpl ? tpl.name : 'Checklist removed')} · ${PA_FREQ_LABELS[eng.frequency] || eng.frequency}</p>
+                        <p class="text-[11px] font-bold text-slate-500 mt-1"><i class="fa-solid fa-user text-slate-300 mr-1"></i>${paEsc(assignee)}</p>
+                    </div>
+                    <div class="flex-1 flex flex-wrap gap-1.5">${pills}</div>
+                    <div class="lg:w-64 shrink-0">
+                        <div class="flex items-center justify-between gap-2 mb-1.5">
+                            <span class="text-xs font-black text-slate-700">${focus.label} · ${paEsc(focus.status)}</span>
+                            ${dueBadge}
+                        </div>
+                        <div class="h-2 bg-slate-100 rounded-full overflow-hidden"><div class="h-full ${focus.completed ? 'bg-emerald-500' : 'bg-indigo-500'}" style="width:${pct}%"></div></div>
+                        <div class="flex justify-between mt-1 text-[10px] font-bold text-slate-400">
+                            <span>${focus.counts.done}/${focus.total} items${focus.counts.query ? ` · <span class="text-amber-600">${focus.counts.query} queries</span>` : ''}</span>
+                            <span>${pendingCount ? `<span class="text-amber-600">${pendingCount} period${pendingCount > 1 ? 's' : ''} pending</span>` : ''}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>`;
+    }
+
+    // ---------- DRAWER ----------
+    async function paOpenDrawer(engId, periodKey) {
+        const eng = paState.engagements.find(e => e.id === engId);
+        if (!eng) return;
+        paState.drawer = { eng, period: periodKey, items: {} };
+        paState.itemFilter = 'all';
+
+        document.getElementById('paDrawerOverlay').classList.remove('hidden');
+        const nameEl = document.getElementById('paDrawerClient');
+        nameEl.innerText = paClientName(eng.client_id);
+        nameEl.onclick = () => { if (typeof openUniversalClientProfile === 'function') openUniversalClientProfile(eng.client_id); };
+        const tpl = paTemplate(eng.template_id);
+        document.getElementById('paDrawerMeta').innerText = `${tpl ? tpl.name : 'Checklist removed'} · ${PA_FREQ_LABELS[eng.frequency]} · ${paFyLabel(eng.fy)}`;
+
+        const sel = document.getElementById('paDrawerAssignee');
+        sel.innerHTML = '<option value="">Unassigned</option>' + (globalTeamMembers || []).map(u => `<option value="${u.id}">${paEsc(u.name)}</option>`).join('');
+        sel.value = eng.assigned_to || '';
+
+        const archBtn = document.getElementById('paArchiveBtn');
+        archBtn.title = eng.is_archived ? 'Restore from archive' : 'Archive';
+        archBtn.innerHTML = eng.is_archived ? '<i class="fa-solid fa-box-open"></i>' : '<i class="fa-solid fa-box-archive"></i>';
+
+        document.getElementById('paChecklistContainer').innerHTML = '<div class="text-center p-8 text-slate-400"><i class="fa-solid fa-spinner fa-spin text-xl"></i></div>';
+
+        const { data, error } = await supabaseClient
+            .from('periodic_audit_item_status')
+            .select('*')
+            .eq('engagement_id', eng.id);
+        if (error) {
+            showToast('Could not load checklist: ' + error.message, 'error');
+            return;
+        }
+        (data || []).forEach(r => { paState.drawer.items[`${r.period}|${r.item_id}`] = r; });
+        paRenderDrawer();
+    }
+
+    function paCloseDrawer() {
+        document.getElementById('paDrawerOverlay').classList.add('hidden');
+        paState.drawer = null;
+        paRenderList();
+    }
+
+    function paSelectPeriod(key) {
+        if (!paState.drawer) return;
+        paState.drawer.period = key;
+        paRenderDrawer();
+    }
+
+    function paSetItemFilter(f) {
+        paState.itemFilter = f;
+        paRenderChecklist();
+    }
+
+    function paRenderDrawer() {
+        const d = paState.drawer;
+        if (!d) return;
+        const infos = paGetPeriods(d.eng.frequency, d.eng.fy).map(p => paPeriodInfo(d.eng, p));
+        const cur = infos.find(i => i.key === d.period) || infos[0];
+        d.period = cur.key;
+
+        document.getElementById('paPeriodTabs').innerHTML = infos.map(i => {
+            const active = i.key === cur.key;
+            return `<button onclick="paSelectPeriod('${i.key}')" class="shrink-0 px-4 py-2 rounded-xl border text-left transition ${active ? 'bg-slate-900 text-white border-slate-900 shadow' : paPillClass(i) + ' hover:shadow-sm'}">
+                <span class="block text-xs font-black">${paPillIcon(i)} ${i.label}</span>
+                <span class="block text-[10px] font-bold ${active ? 'text-slate-300' : 'opacity-70'}">${i.total ? i.counts.done + '/' + i.total : ''}${i.row.due_date ? ' · ' + paFmtDate(i.row.due_date) : ''}</span>
+            </button>`;
+        }).join('');
+
+        document.getElementById('paPeriodRange').innerText = cur.long;
+        document.getElementById('paDueDate').value = cur.row.due_date || '';
+        document.getElementById('paPeriodStatus').value = cur.status;
+        document.getElementById('paPeriodRemarks').value = cur.row.remarks || '';
+        paRenderChecklist();
+    }
+
+    function paUpdateProgress() {
+        const d = paState.drawer;
+        const items = paTemplate(d.eng.template_id)?.items || [];
+        const done = items.filter(it => {
+            const s = d.items[`${d.period}|${it.id}`]?.status;
+            return s === 'Done' || s === 'N/A';
+        }).length;
+        const pct = items.length ? Math.round(done / items.length * 100) : 0;
+        document.getElementById('paProgressText').innerText = `${done}/${items.length} · ${pct}%`;
+        document.getElementById('paProgressBar').style.width = pct + '%';
+    }
+
+    function paRenderChecklist() {
+        const d = paState.drawer;
+        if (!d) return;
+        const container = document.getElementById('paChecklistContainer');
+        const tpl = paTemplate(d.eng.template_id);
+        const items = tpl?.items || [];
+
+        document.querySelectorAll('#paItemFilterBar button').forEach(b => {
+            const on = b.dataset.f === paState.itemFilter;
+            b.className = `px-2.5 py-1 rounded-lg transition ${on ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`;
+        });
+        paUpdateProgress();
+
+        if (items.length === 0) {
+            container.innerHTML = '<div class="text-center py-10 text-slate-400 text-sm font-bold bg-white rounded-2xl border border-dashed border-slate-200">This checklist has no items. Upload one from the Checklists button.</div>';
+            return;
+        }
+
+        const periods = paGetPeriods(d.eng.frequency, d.eng.fy);
+        const curIdx = periods.findIndex(p => p.key === d.period);
+        const earlier = periods.slice(0, curIdx);
+
+        const sections = [];
+        const bySection = {};
+        items.forEach(it => {
+            const row = d.items[`${d.period}|${it.id}`];
+            const status = row?.status || 'Pending';
+            if (paState.itemFilter === 'open' && (status === 'Done' || status === 'N/A')) return;
+            if (paState.itemFilter === 'Query' && status !== 'Query') return;
+            const sec = it.section || 'General';
+            if (!bySection[sec]) { bySection[sec] = []; sections.push(sec); }
+            bySection[sec].push(it);
+        });
+
+        if (sections.length === 0) {
+            container.innerHTML = '<div class="text-center py-10 text-slate-400 text-sm font-bold bg-white rounded-2xl border border-dashed border-slate-200">Nothing here for this filter.</div>';
+            return;
+        }
+
+        const btnStyle = {
+            Pending: 'bg-slate-700 text-white border-slate-700',
+            Done: 'bg-emerald-600 text-white border-emerald-600',
+            Query: 'bg-amber-500 text-white border-amber-500',
+            'N/A': 'bg-slate-400 text-white border-slate-400'
+        };
+
+        container.innerHTML = sections.map(sec => {
+            const rows = bySection[sec].map(it => {
+                const row = d.items[`${d.period}|${it.id}`];
+                const status = row?.status || 'Pending';
+                // Carry-forward: queries still open from earlier periods.
+                const openBefore = earlier.filter(p => d.items[`${p.key}|${it.id}`]?.status === 'Query').map(p => p.label);
+                const buttons = PA_ITEM_STATUSES.map(s => `
+                    <button onclick="paSetItemStatus('${it.id}', '${s}')" class="px-2.5 py-1 rounded-lg border text-[11px] font-bold transition ${s === status ? btnStyle[s] : 'bg-white text-slate-500 border-slate-200 hover:border-slate-400'}">${s}</button>`).join('');
+                const meta = row && row.updated_by ? `${paEsc(paUserName(row.updated_by))} · ${paFmtDate(new Date(row.updated_at))}` : '';
+                return `
+                    <div class="p-4 ${status === 'Done' || status === 'N/A' ? 'bg-slate-50/60' : 'bg-white'}">
+                        <div class="flex flex-col md:flex-row md:items-start gap-3">
+                            <div class="flex-1 min-w-0">
+                                <p class="text-sm font-bold ${status === 'Done' ? 'text-slate-400 line-through' : 'text-slate-800'}">${paEsc(it.item)}</p>
+                                ${it.guidance ? `<p class="text-xs text-slate-500 mt-1">${paEsc(it.guidance)}</p>` : ''}
+                                ${openBefore.length ? `<p class="text-[10px] font-black text-amber-700 bg-amber-50 border border-amber-200 inline-block px-2 py-0.5 rounded-md mt-2"><i class="fa-solid fa-rotate-left mr-1"></i>Query open in ${openBefore.join(', ')}</p>` : ''}
+                            </div>
+                            <div class="flex gap-1 shrink-0">${buttons}</div>
+                        </div>
+                        <div class="flex items-center gap-3 mt-2">
+                            <input type="text" value="${paEsc(row?.remark || '')}" onchange="paSetItemRemark('${it.id}', this.value)" placeholder="Remark / observation..." class="flex-1 text-xs border border-slate-100 bg-white rounded-lg px-3 py-1.5 outline-none focus:ring-2 focus:ring-emerald-400 focus:border-transparent">
+                            <span class="text-[10px] font-bold text-slate-400 whitespace-nowrap">${meta}</span>
+                        </div>
+                    </div>`;
+            }).join('');
+            return `
+                <div class="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+                    <div class="px-4 py-2.5 bg-slate-50 border-b border-slate-100 text-[11px] font-black text-slate-500 uppercase tracking-widest">${paEsc(sec)}</div>
+                    <div class="divide-y divide-slate-100">${rows}</div>
+                </div>`;
+        }).join('');
+    }
+
+    async function paUpsertItem(itemId, fields) {
+        const d = paState.drawer;
+        const key = `${d.period}|${itemId}`;
+        const prev = d.items[key];
+        const payload = {
+            engagement_id: d.eng.id,
+            period: d.period,
+            item_id: itemId,
+            status: prev?.status || 'Pending',
+            remark: prev?.remark || null,
+            ...fields,
+            updated_by: currentUser?.id || null,
+            updated_at: new Date().toISOString()
+        };
+        const { data, error } = await supabaseClient
+            .from('periodic_audit_item_status')
+            .upsert(payload, { onConflict: 'engagement_id,period,item_id' })
+            .select()
+            .single();
+        if (error) {
+            showToast('Could not save: ' + error.message, 'error');
+            return false;
+        }
+        d.items[key] = data;
+        paRecountPeriod(d.eng.id, d.period);
+        return true;
+    }
+
+    function paRecountPeriod(engId, period) {
+        const d = paState.drawer;
+        const items = paTemplate(d.eng.template_id)?.items || [];
+        const c = { done: 0, query: 0, touched: 0 };
+        items.forEach(it => {
+            const s = d.items[`${period}|${it.id}`]?.status;
+            if (s === 'Done' || s === 'N/A') c.done++;
+            if (s === 'Query') c.query++;
+            if (s && s !== 'Pending') c.touched++;
+        });
+        (paState.itemCounts[engId] = paState.itemCounts[engId] || {})[period] = c;
+    }
+
+    async function paSetItemStatus(itemId, status) {
+        const ok = await paUpsertItem(itemId, { status });
+        if (!ok) return;
+        // First tick on a fresh period moves it to In Progress.
+        const row = (paState.periodsByEng[paState.drawer.eng.id] || {})[paState.drawer.period];
+        if (status !== 'Pending' && (!row || !row.status || row.status === 'Not Started')) {
+            await paSavePeriodField('status', 'In Progress', true);
+        }
+        paRenderDrawer();
+    }
+
+    async function paSetItemRemark(itemId, remark) {
+        await paUpsertItem(itemId, { remark: remark.trim() || null });
+    }
+
+    async function paSavePeriodField(field, value, silent) {
+        const d = paState.drawer;
+        if (!d) return;
+        if (field === 'status' && value === 'Completed' && !silent) {
+            const total = (paTemplate(d.eng.template_id)?.items || []).length;
+            const done = ((paState.itemCounts[d.eng.id] || {})[d.period] || {}).done || 0;
+            if (done < total && !confirm(`${total - done} checklist item(s) are still open for ${d.period}. Mark this period Completed anyway?`)) {
+                paRenderDrawer();
+                return;
+            }
+        }
+        const { data, error } = await supabaseClient
+            .from('periodic_audit_periods')
+            .upsert({
+                engagement_id: d.eng.id,
+                period: d.period,
+                [field]: value,
+                updated_by: currentUser?.id || null,
+                updated_at: new Date().toISOString()
+            }, { onConflict: 'engagement_id,period' })
+            .select()
+            .single();
+        if (error) {
+            showToast('Could not save: ' + error.message, 'error');
+            return;
+        }
+        (paState.periodsByEng[d.eng.id] = paState.periodsByEng[d.eng.id] || {})[d.period] = data;
+        if (!silent) paRenderDrawer();
+    }
+
+    async function paSaveAssignee() {
+        const d = paState.drawer;
+        const val = document.getElementById('paDrawerAssignee').value || null;
+        const { error } = await supabaseClient.from('periodic_audit_engagements').update({ assigned_to: val }).eq('id', d.eng.id);
+        if (error) return showToast('Could not reassign: ' + error.message, 'error');
+        d.eng.assigned_to = val;
+        showToast('Assignment updated.', 'success');
+    }
+
+    async function paToggleArchive() {
+        const d = paState.drawer;
+        const next = !d.eng.is_archived;
+        const { error } = await supabaseClient.from('periodic_audit_engagements').update({ is_archived: next }).eq('id', d.eng.id);
+        if (error) return showToast('Could not update: ' + error.message, 'error');
+        d.eng.is_archived = next;
+        showToast(next ? 'Audit archived.' : 'Audit restored.', 'success');
+        paCloseDrawer();
+    }
+
+    async function paDeleteEngagement() {
+        const d = paState.drawer;
+        const name = paClientName(d.eng.client_id);
+        if (!confirm(`Remove the periodic audit for ${name} (${paFyLabel(d.eng.fy)})?\n\nAll checklist progress for every period of this audit will be permanently deleted. Use Archive instead to keep the history.`)) return;
+        const { error } = await supabaseClient.from('periodic_audit_engagements').delete().eq('id', d.eng.id);
+        if (error) return showToast('Could not remove: ' + error.message, 'error');
+        paState.engagements = paState.engagements.filter(e => e.id !== d.eng.id);
+        showToast('Periodic audit removed.', 'success');
+        paCloseDrawer();
+    }
+
+    function paExportPeriod() {
+        const d = paState.drawer;
+        if (!d || typeof XLSX === 'undefined') return;
+        const tpl = paTemplate(d.eng.template_id);
+        const period = paGetPeriods(d.eng.frequency, d.eng.fy).find(p => p.key === d.period);
+        const prow = (paState.periodsByEng[d.eng.id] || {})[d.period] || {};
+        const client = paClientName(d.eng.client_id);
+        const aoa = [
+            ['Client', client],
+            ['Checklist', tpl ? tpl.name : ''],
+            ['Period', `${period.label} (${period.long}) · ${paFyLabel(d.eng.fy)}`],
+            ['Status', prow.status || 'Not Started'],
+            ['Due Date', prow.due_date || ''],
+            ['Remarks', prow.remarks || ''],
+            [],
+            ['Section', 'Checklist Item', 'Guidance', 'Status', 'Remark', 'Updated By', 'Updated On']
+        ];
+        (tpl?.items || []).forEach(it => {
+            const r = d.items[`${d.period}|${it.id}`];
+            aoa.push([it.section || '', it.item, it.guidance || '', r?.status || 'Pending', r?.remark || '',
+                r?.updated_by ? paUserName(r.updated_by) : '', r?.updated_at ? new Date(r.updated_at).toLocaleDateString('en-IN') : '']);
+        });
+        const ws = XLSX.utils.aoa_to_sheet(aoa);
+        ws['!cols'] = [{ wch: 18 }, { wch: 60 }, { wch: 40 }, { wch: 10 }, { wch: 40 }, { wch: 16 }, { wch: 12 }];
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, period.label);
+        const safe = s => String(s).replace(/[\\/:*?"<>|]/g, '').slice(0, 60);
+        XLSX.writeFile(wb, `${safe(client)} - ${safe(tpl ? tpl.name : 'Audit')} - ${period.label} ${paFyLabel(d.eng.fy)}.xlsx`);
+    }
+
+    // ---------- ADD CLIENTS ----------
+    function paCloseModal(id) {
+        document.getElementById(id).classList.add('hidden');
+    }
+
+    function paOpenAddModal() {
+        if (paState.templates.length === 0) {
+            showToast('Upload a checklist first.', 'warning');
+            return paOpenTemplatesModal();
+        }
+        paState.addSelected = new Set();
+        document.getElementById('paAddFyLabel').innerText = paFyLabel(paState.fy);
+        const tplSel = document.getElementById('paAddTemplate');
+        tplSel.innerHTML = paState.templates.map(t => `<option value="${t.id}">${paEsc(t.name)} (${(t.items || []).length} items)</option>`).join('');
+        tplSel.onchange = paRenderAddClientList;
+        const userSel = document.getElementById('paAddAssignee');
+        userSel.innerHTML = '<option value="">Unassigned</option>' + (globalTeamMembers || []).map(u => `<option value="${u.id}">${paEsc(u.name)}</option>`).join('');
+        userSel.value = currentUser?.id || '';
+        document.getElementById('paAddClientSearch').value = '';
+        paRenderAddClientList();
+        document.getElementById('paAddModal').classList.remove('hidden');
+    }
+
+    function paRenderAddClientList() {
+        const tplId = document.getElementById('paAddTemplate').value;
+        const q = (document.getElementById('paAddClientSearch').value || '').toLowerCase().trim();
+        const already = new Set(paState.engagements.filter(e => e.template_id === tplId).map(e => e.client_id));
+        already.forEach(id => paState.addSelected.delete(id));
+        const clients = (window.globalClientsList || []).filter(c => !q || (c.display_name || '').toLowerCase().includes(q)).slice(0, 300);
+        document.getElementById('paAddClientList').innerHTML = clients.map(c => {
+            const added = already.has(c.client_id);
+            const checked = paState.addSelected.has(c.client_id);
+            return `<label class="flex items-center gap-3 px-3 py-2.5 text-sm ${added ? 'opacity-50 cursor-not-allowed' : 'hover:bg-emerald-50/50 cursor-pointer'}">
+                <input type="checkbox" ${added ? 'disabled' : ''} ${checked ? 'checked' : ''} onchange="paToggleAddClient('${c.client_id}', this.checked)" class="w-4 h-4 accent-emerald-600">
+                <span class="flex-1 font-semibold text-slate-700 truncate">${paEsc(c.display_name)}</span>
+                ${added ? '<span class="text-[10px] font-black text-slate-400 uppercase">Already added</span>' : ''}
+            </label>`;
+        }).join('') || '<div class="p-4 text-center text-sm text-slate-400">No clients found.</div>';
+        paUpdateAddCount();
+    }
+
+    function paToggleAddClient(id, on) {
+        if (on) paState.addSelected.add(id); else paState.addSelected.delete(id);
+        paUpdateAddCount();
+    }
+
+    function paUpdateAddCount() {
+        const n = paState.addSelected.size;
+        document.getElementById('paAddSelectedCount').innerText = n ? `· ${n} selected` : '';
+        document.getElementById('paAddSaveBtn').innerText = n ? `Add ${n} Client${n > 1 ? 's' : ''}` : 'Add';
+    }
+
+    async function paSaveNewEngagements() {
+        const tplId = document.getElementById('paAddTemplate').value;
+        const frequency = document.getElementById('paAddFrequency').value;
+        const assigned = document.getElementById('paAddAssignee').value || null;
+        const ids = Array.from(paState.addSelected);
+        if (!tplId) return showToast('Choose a checklist.', 'warning');
+        if (ids.length === 0) return showToast('Select at least one client.', 'warning');
+
+        const btn = document.getElementById('paAddSaveBtn');
+        btn.disabled = true;
+        btn.innerText = 'Adding...';
+        const rows = ids.map(client_id => ({ client_id, template_id: tplId, fy: paState.fy, frequency, assigned_to: assigned }));
+        const { error } = await supabaseClient.from('periodic_audit_engagements').insert(rows);
+        btn.disabled = false;
+        if (error) {
+            paUpdateAddCount();
+            return showToast('Could not add clients: ' + error.message, 'error');
+        }
+        showToast(`${ids.length} client(s) added to periodic audit.`, 'success');
+        paCloseModal('paAddModal');
+        loadPeriodicAuditsData();
+    }
+
+    // ---------- CHECKLIST TEMPLATES ----------
+    function paOpenTemplatesModal() {
+        paRenderTemplatesList();
+        document.getElementById('paTemplatesModal').classList.remove('hidden');
+    }
+
+    async function paRenderTemplatesList() {
+        const list = document.getElementById('paTemplatesList');
+        // Usage across all years, so a template in use is never deleted.
+        const { data: usage } = await supabaseClient.from('periodic_audit_engagements').select('template_id');
+        const used = {};
+        (usage || []).forEach(u => { used[u.template_id] = (used[u.template_id] || 0) + 1; });
+
+        if (paState.templates.length === 0) {
+            list.innerHTML = '<div class="text-center py-8 text-slate-400 text-sm font-bold border border-dashed border-slate-200 rounded-xl">No checklists yet. Upload your first Excel file above.</div>';
+            return;
+        }
+        list.innerHTML = paState.templates.map(t => {
+            const n = used[t.id] || 0;
+            const sections = new Set((t.items || []).map(i => i.section || 'General')).size;
+            return `<div class="flex items-center gap-3 p-3 border border-slate-100 rounded-xl hover:border-slate-200">
+                <div class="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0"><i class="fa-solid fa-list-check"></i></div>
+                <div class="flex-1 min-w-0">
+                    <p class="font-black text-slate-800 truncate">${paEsc(t.name)}</p>
+                    <p class="text-[11px] font-bold text-slate-400">${(t.items || []).length} items · ${sections} section${sections === 1 ? '' : 's'} · used by ${n} audit${n === 1 ? '' : 's'}</p>
+                </div>
+                <button onclick="paDownloadTemplate('${t.id}')" title="Download as Excel" class="w-9 h-9 rounded-lg text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 transition"><i class="fa-solid fa-download"></i></button>
+                <button onclick="paDeleteTemplate('${t.id}', ${n})" title="${n ? 'In use — cannot delete' : 'Delete'}" class="w-9 h-9 rounded-lg transition ${n ? 'text-slate-200 cursor-not-allowed' : 'text-slate-500 hover:text-rose-600 hover:bg-rose-50'}"><i class="fa-solid fa-trash-can"></i></button>
+            </div>`;
+        }).join('');
+    }
+
+    function paDownloadSampleTemplate() {
+        const aoa = [
+            ['Section', 'Checklist Item', 'Guidance'],
+            ['Bank', 'Bank reconciliation prepared for all accounts', 'Investigate unreconciled entries older than 30 days'],
+            ['Bank', 'Review large or unusual payments and receipts', 'e.g. above ₹1,00,000 or to new parties'],
+            ['Sales', 'Sales register matched with GSTR-1', ''],
+            ['Purchases', 'Purchase register / ITC matched with GSTR-2B', ''],
+            ['Expenses', 'Expense vouchers supported by bills and approvals', 'Sample check'],
+            ['Cash', 'Cash in hand verified and matched with books', ''],
+            ['Statutory Dues', 'TDS deducted and deposited on time', ''],
+            ['Statutory Dues', 'GST, PF, ESIC and PT paid by due dates', ''],
+            ['Receivables', 'Debtors ageing reviewed; follow-up on dues over 90 days', ''],
+            ['Payables', 'Creditors ageing reviewed and balances confirmed', ''],
+            ['Payroll', 'Salary register matched with bank payments', ''],
+            ['Fixed Assets', 'Additions supported by invoices; depreciation booked', '']
+        ];
+        const ws = XLSX.utils.aoa_to_sheet(aoa);
+        ws['!cols'] = [{ wch: 18 }, { wch: 60 }, { wch: 50 }];
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Checklist');
+        XLSX.writeFile(wb, 'Periodic Audit Checklist - Sample.xlsx');
+    }
+
+    function paDownloadTemplate(id) {
+        const t = paTemplate(id);
+        if (!t) return;
+        const aoa = [['Section', 'Checklist Item', 'Guidance']].concat((t.items || []).map(i => [i.section || '', i.item, i.guidance || '']));
+        const ws = XLSX.utils.aoa_to_sheet(aoa);
+        ws['!cols'] = [{ wch: 18 }, { wch: 60 }, { wch: 50 }];
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Checklist');
+        XLSX.writeFile(wb, `${t.name.replace(/[\\/:*?"<>|]/g, '')}.xlsx`);
+    }
+
+    async function paDeleteTemplate(id, usedCount) {
+        if (usedCount) return showToast('This checklist is used by audits. Remove those audits first.', 'warning');
+        const t = paTemplate(id);
+        if (!confirm(`Delete checklist "${t ? t.name : ''}"?`)) return;
+        const { error } = await supabaseClient.from('periodic_audit_templates').delete().eq('id', id);
+        if (error) return showToast('Could not delete: ' + error.message, 'error');
+        paState.templates = paState.templates.filter(x => x.id !== id);
+        paPopulateTemplateFilter();
+        paRenderTemplatesList();
+        paRenderList();
+    }
+
+    // Reads the first sheet and works out which columns hold section / item / guidance.
+    function paParseChecklistRows(rows) {
+        const clean = v => String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+        rows = rows.map(r => (r || []).map(clean));
+
+        const reItem = /(check\s*list|checklist item|^item|particular|check\s*point|procedure|activity|task|point|audit area|scope)/i;
+        const reSection = /(section|area|^head|category|group|module|nature)/i;
+        const reGuide = /(guidance|description|detail|note|remark|instruction|how to|comment|objective)/i;
+        const reSkip = /^(s\.?\s*no\.?|sr\.?\s*no\.?|sl\.?\s*no\.?|#|no\.?|serial.*)$/i;
+
+        let headerIdx = -1, cItem = -1, cSec = -1, cGuide = -1;
+        for (let r = 0; r < Math.min(rows.length, 15); r++) {
+            const row = rows[r];
+            const filled = row.filter(Boolean).length;
+            // A header has short labels; a lone long cell is a sheet title like "Quarterly Audit Checklist".
+            const iIdx = row.findIndex(h => h && h.length <= 40 && reItem.test(h) && !reSection.test(h) && !reSkip.test(h) && (filled >= 2 || h.length <= 25));
+            if (iIdx >= 0) {
+                headerIdx = r;
+                cItem = iIdx;
+                cSec = row.findIndex((h, i) => i !== cItem && h && reSection.test(h));
+                cGuide = row.findIndex((h, i) => i !== cItem && i !== cSec && h && reGuide.test(h));
+                break;
+            }
+        }
+
+        let data = headerIdx >= 0 ? rows.slice(headerIdx + 1) : rows;
+        if (headerIdx < 0) {
+            // No header found: drop a leading serial-number column, then use Section | Item | Guidance by position.
+            const nonEmpty = data.filter(r => r.some(Boolean));
+            const firstIsSerial = nonEmpty.length && nonEmpty.every(r => !r[0] || /^\d+(\.\d+)*\.?$/.test(r[0]));
+            const off = firstIsSerial ? 1 : 0;
+            const width = Math.max(0, ...nonEmpty.map(r => r.slice(off).filter(Boolean).length));
+            if (width <= 1) { cItem = off; }
+            else { cSec = off; cItem = off + 1; cGuide = width >= 3 ? off + 2 : -1; }
+        }
+
+        const items = [];
+        let currentSection = '';
+        data.forEach(r => {
+            const item = cItem >= 0 ? (r[cItem] || '') : '';
+            const sec = cSec >= 0 ? (r[cSec] || '') : '';
+            const guide = cGuide >= 0 ? (r[cGuide] || '') : '';
+            if (sec) currentSection = sec;
+            // Without a section column, an ALL-CAPS or "Heading:" line on its own is a section heading.
+            if (item && cSec < 0 && r.filter(Boolean).length === 1 && /[A-Z]/.test(item) && (item === item.toUpperCase() || /:$/.test(item))) {
+                currentSection = item.replace(/:$/, '').trim();
+                return;
+            }
+            if (!item) {
+                // A row with only one filled cell and no item acts as a section heading.
+                const only = r.filter(Boolean);
+                if (only.length === 1 && cSec < 0) currentSection = only[0];
+                return;
+            }
+            items.push({ section: currentSection, item, guidance: guide });
+        });
+        return items;
+    }
+
+    function paHandleTemplateFile(input) {
+        const file = input.files && input.files[0];
+        input.value = '';
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = e => {
+            try {
+                const wb = XLSX.read(new Uint8Array(e.target.result), { type: 'array' });
+                const ws = wb.Sheets[wb.SheetNames[0]];
+                const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false });
+                const items = paParseChecklistRows(rows);
+                if (items.length === 0) return showToast('No checklist items found in that file. Use the Sample Format.', 'error');
+                paState.upload = { items, fileName: file.name.replace(/\.(xlsx|xls|csv)$/i, '') };
+                paShowUploadPreview();
+            } catch (err) {
+                console.error(err);
+                showToast('Could not read the Excel file: ' + err.message, 'error');
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    }
+
+    function paShowUploadPreview() {
+        const u = paState.upload;
+        const sections = new Set(u.items.map(i => i.section || 'General')).size;
+        document.getElementById('paUploadSummary').innerText = `${u.items.length} checklist items in ${sections} section${sections === 1 ? '' : 's'} found in "${u.fileName}".`;
+        const target = document.getElementById('paUploadTarget');
+        const match = paState.templates.find(t => t.name.toLowerCase() === u.fileName.toLowerCase());
+        target.innerHTML = '<option value="">Create new checklist</option>' + paState.templates.map(t => `<option value="${t.id}">Replace: ${paEsc(t.name)}</option>`).join('');
+        target.value = match ? match.id : '';
+        document.getElementById('paUploadName').value = u.fileName;
+        paToggleUploadName();
+        document.getElementById('paUploadPreviewBody').innerHTML = u.items.map((it, i) => `
+            <tr><td class="px-3 py-2 text-slate-400 text-xs">${i + 1}</td>
+                <td class="px-3 py-2 text-xs font-bold text-slate-500">${paEsc(it.section)}</td>
+                <td class="px-3 py-2 text-slate-800">${paEsc(it.item)}</td>
+                <td class="px-3 py-2 text-xs text-slate-500">${paEsc(it.guidance)}</td></tr>`).join('');
+        document.getElementById('paUploadPreviewModal').classList.remove('hidden');
+    }
+
+    function paToggleUploadName() {
+        const isNew = !document.getElementById('paUploadTarget').value;
+        document.getElementById('paUploadNameWrap').style.visibility = isNew ? 'visible' : 'hidden';
+    }
+
+    function paNewItemId() {
+        return 'i_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    }
+
+    async function paConfirmTemplateUpload() {
+        const u = paState.upload;
+        if (!u) return;
+        const targetId = document.getElementById('paUploadTarget').value;
+        const btn = document.getElementById('paUploadSaveBtn');
+
+        let items;
+        if (targetId) {
+            // Keep the ids of unchanged points so progress already recorded against them survives.
+            const old = paTemplate(targetId)?.items || [];
+            const byFull = {}, byText = {};
+            old.forEach(o => {
+                byFull[`${(o.section || '').toLowerCase()}|${o.item.toLowerCase()}`] = o.id;
+                if (!byText[o.item.toLowerCase()]) byText[o.item.toLowerCase()] = o.id;
+            });
+            const usedIds = new Set();
+            items = u.items.map(it => {
+                let id = byFull[`${it.section.toLowerCase()}|${it.item.toLowerCase()}`] || byText[it.item.toLowerCase()];
+                if (!id || usedIds.has(id)) id = paNewItemId();
+                usedIds.add(id);
+                return { id, ...it };
+            });
+            const removed = old.filter(o => !usedIds.has(o.id)).length;
+            if (removed && !confirm(`${removed} existing checklist point(s) are not in the new file and will be removed from this checklist (their past progress will be hidden). Continue?`)) return;
+        } else {
+            items = u.items.map(it => ({ id: paNewItemId(), ...it }));
+        }
+
+        btn.disabled = true;
+        btn.innerText = 'Saving...';
+        let res;
+        if (targetId) {
+            res = await supabaseClient.from('periodic_audit_templates').update({ items, updated_at: new Date().toISOString() }).eq('id', targetId).select().single();
+        } else {
+            const name = document.getElementById('paUploadName').value.trim();
+            if (!name) { btn.disabled = false; btn.innerText = 'Save Checklist'; return showToast('Give the checklist a name.', 'warning'); }
+            res = await supabaseClient.from('periodic_audit_templates').insert({ name, items }).select().single();
+        }
+        btn.disabled = false;
+        btn.innerText = 'Save Checklist';
+        if (res.error) {
+            const msg = /duplicate|unique/i.test(res.error.message) ? 'A checklist with that name already exists. Choose "Replace" or another name.' : res.error.message;
+            return showToast('Could not save checklist: ' + msg, 'error');
+        }
+
+        const idx = paState.templates.findIndex(t => t.id === res.data.id);
+        if (idx >= 0) paState.templates[idx] = res.data; else paState.templates.push(res.data);
+        paState.templates.sort((a, b) => a.name.localeCompare(b.name));
+        paState.upload = null;
+        paCloseModal('paUploadPreviewModal');
+        showToast(`Checklist "${res.data.name}" saved with ${items.length} items.`, 'success');
+        paPopulateTemplateFilter();
+        paRenderTemplatesList();
+        // Item ids may have changed, so reload counts.
+        loadPeriodicAuditsData();
+    }
+</script>

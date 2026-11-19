@@ -1,0 +1,266 @@
+<!-- ==================== PERIODIC AUDITS (internal quarterly / monthly / half-yearly) ==================== -->
+<!-- Separate from the annual Audit Status page (view-audits), which is left untouched. -->
+<div id="view-periodic-audits" class="hidden px-4 py-4 md:px-6 md:py-6 bg-slate-50/50 overflow-y-auto w-full h-full os-scroll">
+    <div class="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-6 w-full gap-6">
+        <div class="flex items-center gap-4">
+            <div class="h-12 w-12 rounded-2xl bg-gradient-to-br from-teal-500 to-emerald-600 flex items-center justify-center text-white shadow-lg shadow-emerald-200">
+                <i class="fa-solid fa-calendar-week text-xl"></i>
+            </div>
+            <div>
+                <h2 class="text-2xl font-black text-slate-900 tracking-tight">Periodic Audits</h2>
+                <p class="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Internal quarterly &amp; monthly reviews</p>
+            </div>
+        </div>
+        <div class="flex flex-wrap items-center gap-3 w-full xl:w-auto">
+            <button onclick="paOpenTemplatesModal()" class="bg-white text-slate-700 border border-slate-200 hover:border-emerald-300 hover:text-emerald-700 px-4 py-3 rounded-xl font-bold shadow-sm transition flex items-center gap-2 text-sm whitespace-nowrap">
+                <i class="fa-solid fa-file-excel"></i> Checklists
+            </button>
+            <button onclick="paOpenAddModal()" class="bg-emerald-600 text-white px-5 py-3 rounded-xl font-bold shadow-lg shadow-emerald-200 hover:bg-emerald-700 transition flex items-center gap-2 text-sm whitespace-nowrap active:scale-95">
+                <i class="fa-solid fa-plus"></i> Add Clients
+            </button>
+        </div>
+    </div>
+
+    <!-- Summary tiles (click to filter) -->
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+        <button onclick="paSetStatusFilter('all')" class="pa-tile text-left bg-white rounded-2xl border border-slate-100 shadow-sm p-4 hover:border-slate-300 transition" data-filter="all">
+            <p class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Active audits</p>
+            <p id="paStatActive" class="text-2xl font-black text-slate-800 mt-1">0</p>
+        </button>
+        <button onclick="paSetStatusFilter('pending')" class="pa-tile text-left bg-white rounded-2xl border border-slate-100 shadow-sm p-4 hover:border-amber-300 transition" data-filter="pending">
+            <p class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Periods pending</p>
+            <p id="paStatPending" class="text-2xl font-black text-amber-600 mt-1">0</p>
+        </button>
+        <button onclick="paSetStatusFilter('overdue')" class="pa-tile text-left bg-white rounded-2xl border border-slate-100 shadow-sm p-4 hover:border-rose-300 transition" data-filter="overdue">
+            <p class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Overdue</p>
+            <p id="paStatOverdue" class="text-2xl font-black text-rose-600 mt-1">0</p>
+        </button>
+        <button onclick="paSetStatusFilter('due_soon')" class="pa-tile text-left bg-white rounded-2xl border border-slate-100 shadow-sm p-4 hover:border-indigo-300 transition" data-filter="due_soon">
+            <p class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Due in 7 days</p>
+            <p id="paStatDueSoon" class="text-2xl font-black text-indigo-600 mt-1">0</p>
+        </button>
+    </div>
+
+    <!-- Filters -->
+    <div class="flex flex-col sm:flex-row flex-wrap items-center gap-3 mb-5 w-full">
+        <div class="relative w-full sm:w-40">
+            <select id="paFyFilter" onchange="loadPeriodicAuditsData()" class="w-full pl-4 pr-8 py-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 text-sm font-bold shadow-sm bg-white text-slate-700 cursor-pointer appearance-none hover:border-emerald-300">
+                <option value="FY_2027_28">FY 2027-28</option>
+                <option value="FY_2026_27" selected>FY 2026-27</option>
+            </select>
+            <i class="fa-solid fa-chevron-down absolute right-4 top-3.5 text-slate-400 text-xs pointer-events-none"></i>
+        </div>
+        <div class="relative w-full sm:w-44">
+            <select id="paAssignFilter" onchange="paRenderList()" class="w-full pl-4 pr-8 py-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 text-sm font-bold shadow-sm bg-white text-slate-700 cursor-pointer appearance-none hover:border-emerald-300">
+                <option value="all">Everyone</option>
+                <option value="mine">My Assignments</option>
+                <option value="archived">Archived</option>
+            </select>
+            <i class="fa-solid fa-chevron-down absolute right-4 top-3.5 text-slate-400 text-xs pointer-events-none"></i>
+        </div>
+        <div class="relative w-full sm:w-52">
+            <select id="paTemplateFilter" onchange="paRenderList()" class="w-full pl-4 pr-8 py-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 text-sm font-bold shadow-sm bg-white text-slate-700 cursor-pointer appearance-none hover:border-emerald-300">
+                <option value="">All Checklists</option>
+            </select>
+            <i class="fa-solid fa-chevron-down absolute right-4 top-3.5 text-slate-400 text-xs pointer-events-none"></i>
+        </div>
+        <div class="relative w-full sm:w-44">
+            <select id="paStatusFilter" onchange="paRenderList()" class="w-full pl-4 pr-8 py-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 text-sm font-bold shadow-sm bg-white text-slate-700 cursor-pointer appearance-none hover:border-emerald-300">
+                <option value="all">All Statuses</option>
+                <option value="pending">Periods Pending</option>
+                <option value="overdue">Overdue</option>
+                <option value="due_soon">Due in 7 Days</option>
+                <option value="no_due">No Due Date Set</option>
+                <option value="up_to_date">Up to Date</option>
+            </select>
+            <i class="fa-solid fa-chevron-down absolute right-4 top-3.5 text-slate-400 text-xs pointer-events-none"></i>
+        </div>
+        <div class="relative w-full sm:flex-1 sm:min-w-[200px]">
+            <i class="fa-solid fa-search absolute left-4 top-3.5 text-slate-400 text-sm"></i>
+            <input type="text" id="paSearchInput" onkeyup="paRenderList()" placeholder="Search Client..." class="w-full pl-10 pr-4 py-3 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500 text-sm shadow-sm bg-white font-medium placeholder:text-slate-400">
+        </div>
+    </div>
+
+    <div id="pa-list-container" class="space-y-3 w-full"></div>
+</div>
+
+<!-- ==================== PERIODIC AUDIT DRAWER ==================== -->
+<div id="paDrawerOverlay" class="hidden fixed inset-0 z-50 bg-slate-50 flex flex-col h-screen">
+    <div class="shrink-0 bg-white border-b border-slate-200 px-4 sm:px-8 py-5">
+        <div class="flex flex-wrap items-start justify-between gap-4">
+            <div class="min-w-0">
+                <button onclick="paCloseDrawer()" class="text-emerald-700 border border-emerald-200 hover:bg-emerald-50 px-3 py-1.5 rounded-lg text-xs font-bold transition inline-flex items-center gap-2 mb-3"><i class="fa-solid fa-arrow-left"></i> Back to Periodic Audits</button>
+                <h2 id="paDrawerClient" class="text-2xl font-black text-slate-900 tracking-tight truncate cursor-pointer hover:text-emerald-700 transition">Client</h2>
+                <p id="paDrawerMeta" class="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1"></p>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+                <div class="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2">
+                    <i class="fa-solid fa-user text-slate-400 text-xs"></i>
+                    <select id="paDrawerAssignee" onchange="paSaveAssignee()" class="bg-transparent text-sm font-bold text-slate-700 outline-none cursor-pointer"></select>
+                </div>
+                <button onclick="paExportPeriod()" title="Export this period to Excel" class="w-10 h-10 flex items-center justify-center rounded-xl border border-slate-200 text-slate-500 hover:text-emerald-700 hover:border-emerald-300 transition"><i class="fa-solid fa-file-arrow-down"></i></button>
+                <button onclick="paToggleArchive()" id="paArchiveBtn" title="Archive" class="w-10 h-10 flex items-center justify-center rounded-xl border border-slate-200 text-slate-500 hover:text-amber-700 hover:border-amber-300 transition"><i class="fa-solid fa-box-archive"></i></button>
+                <button onclick="paDeleteEngagement()" title="Remove this audit" class="w-10 h-10 flex items-center justify-center rounded-xl border border-slate-200 text-slate-500 hover:text-rose-600 hover:border-rose-300 transition"><i class="fa-solid fa-trash-can"></i></button>
+            </div>
+        </div>
+        <!-- Period tabs -->
+        <div id="paPeriodTabs" class="flex gap-2 overflow-x-auto mt-5 pb-1 os-scroll"></div>
+    </div>
+
+    <div class="flex-1 overflow-y-auto os-scroll">
+        <div class="max-w-5xl mx-auto px-4 sm:px-8 py-6">
+            <!-- Period controls -->
+            <div class="bg-white rounded-2xl border border-slate-100 shadow-sm p-5 mb-6">
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                    <div>
+                        <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Period</label>
+                        <p id="paPeriodRange" class="text-sm font-black text-slate-800 py-2.5"></p>
+                    </div>
+                    <div>
+                        <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Due Date</label>
+                        <input type="date" id="paDueDate" onchange="paSavePeriodField('due_date', this.value || null)" class="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-emerald-500">
+                    </div>
+                    <div>
+                        <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Period Status</label>
+                        <select id="paPeriodStatus" onchange="paSavePeriodField('status', this.value)" class="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-emerald-500 bg-white cursor-pointer">
+                            <option>Not Started</option>
+                            <option>In Progress</option>
+                            <option>Under Review</option>
+                            <option>Completed</option>
+                        </select>
+                    </div>
+                    <div>
+                        <div class="flex justify-between items-center mb-2">
+                            <span class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Progress</span>
+                            <span id="paProgressText" class="text-xs font-black text-emerald-700">0/0</span>
+                        </div>
+                        <div class="h-2.5 bg-slate-100 rounded-full overflow-hidden"><div id="paProgressBar" class="h-full bg-emerald-500 transition-all" style="width:0%"></div></div>
+                    </div>
+                </div>
+                <div class="mt-4">
+                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Period Remarks</label>
+                    <textarea id="paPeriodRemarks" rows="2" onchange="paSavePeriodField('remarks', this.value)" placeholder="Key observations for this period..." class="w-full rounded-xl border border-slate-200 p-3 text-sm outline-none focus:ring-2 focus:ring-emerald-500 resize-none"></textarea>
+                </div>
+            </div>
+
+            <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <h3 class="text-base font-black text-slate-800 flex items-center gap-2"><i class="fa-solid fa-list-check text-emerald-600"></i> Checklist</h3>
+                <div class="flex items-center gap-1 bg-slate-100 p-1 rounded-xl text-[11px] font-bold" id="paItemFilterBar">
+                    <button onclick="paSetItemFilter('all')" data-f="all" class="px-2.5 py-1 rounded-lg transition">All</button>
+                    <button onclick="paSetItemFilter('open')" data-f="open" class="px-2.5 py-1 rounded-lg transition">Open</button>
+                    <button onclick="paSetItemFilter('Query')" data-f="Query" class="px-2.5 py-1 rounded-lg transition">Queries</button>
+                </div>
+            </div>
+            <div id="paChecklistContainer" class="space-y-5 pb-16"></div>
+        </div>
+    </div>
+</div>
+
+<!-- ==================== ADD CLIENTS MODAL ==================== -->
+<div id="paAddModal" class="hidden fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl w-full max-w-2xl max-h-[90vh] shadow-2xl border border-slate-100 flex flex-col">
+        <div class="p-6 border-b border-slate-100 flex justify-between items-center shrink-0">
+            <div>
+                <h3 class="text-xl font-black text-slate-900">Add Clients to Periodic Audit</h3>
+                <p class="text-xs text-slate-500 font-medium mt-1">For <span id="paAddFyLabel" class="font-bold"></span></p>
+            </div>
+            <button onclick="paCloseModal('paAddModal')" class="w-9 h-9 rounded-xl hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="p-6 overflow-y-auto os-scroll space-y-4">
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Checklist</label>
+                    <select id="paAddTemplate" class="w-full rounded-xl border border-slate-200 p-3 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-emerald-500 bg-white"></select>
+                </div>
+                <div>
+                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Frequency</label>
+                    <select id="paAddFrequency" class="w-full rounded-xl border border-slate-200 p-3 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-emerald-500 bg-white">
+                        <option value="quarterly" selected>Quarterly</option>
+                        <option value="monthly">Monthly</option>
+                        <option value="half_yearly">Half-Yearly</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Assign To</label>
+                    <select id="paAddAssignee" class="w-full rounded-xl border border-slate-200 p-3 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-emerald-500 bg-white"></select>
+                </div>
+            </div>
+            <div>
+                <div class="flex justify-between items-center mb-2">
+                    <label class="text-[10px] font-black text-slate-400 uppercase tracking-widest">Clients <span id="paAddSelectedCount" class="text-emerald-700 normal-case tracking-normal"></span></label>
+                </div>
+                <div class="relative mb-2">
+                    <i class="fa-solid fa-search absolute left-3.5 top-3 text-slate-400 text-xs"></i>
+                    <input type="text" id="paAddClientSearch" oninput="paRenderAddClientList()" placeholder="Search clients..." class="w-full pl-9 pr-3 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500">
+                </div>
+                <div id="paAddClientList" class="border border-slate-100 rounded-xl max-h-72 overflow-y-auto os-scroll divide-y divide-slate-50"></div>
+            </div>
+        </div>
+        <div class="p-6 border-t border-slate-100 flex gap-3 shrink-0">
+            <button onclick="paCloseModal('paAddModal')" class="flex-1 py-3 rounded-xl font-black text-xs uppercase tracking-widest text-slate-600 bg-slate-100 hover:bg-slate-200 transition">Cancel</button>
+            <button onclick="paSaveNewEngagements()" id="paAddSaveBtn" class="flex-1 py-3 rounded-xl font-black text-xs uppercase tracking-widest text-white bg-emerald-600 hover:bg-emerald-700 shadow-lg shadow-emerald-200 transition">Add</button>
+        </div>
+    </div>
+</div>
+
+<!-- ==================== CHECKLIST TEMPLATES MODAL ==================== -->
+<div id="paTemplatesModal" class="hidden fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl w-full max-w-3xl max-h-[90vh] shadow-2xl border border-slate-100 flex flex-col">
+        <div class="p-6 border-b border-slate-100 flex justify-between items-center shrink-0">
+            <div>
+                <h3 class="text-xl font-black text-slate-900">Periodic Audit Checklists</h3>
+                <p class="text-xs text-slate-500 font-medium mt-1">Upload an Excel file to create or replace a checklist.</p>
+            </div>
+            <button onclick="paCloseModal('paTemplatesModal')" class="w-9 h-9 rounded-xl hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="p-6 overflow-y-auto os-scroll">
+            <div class="flex flex-wrap gap-3 mb-5">
+                <label class="bg-emerald-600 text-white px-4 py-2.5 rounded-xl font-bold shadow-sm hover:bg-emerald-700 transition flex items-center gap-2 text-sm cursor-pointer">
+                    <i class="fa-solid fa-upload"></i> Upload Excel
+                    <input type="file" id="paTemplateFileInput" accept=".xlsx,.xls,.csv" class="hidden" onchange="paHandleTemplateFile(this)">
+                </label>
+                <button onclick="paDownloadSampleTemplate()" class="bg-white text-slate-700 border border-slate-200 hover:border-emerald-300 px-4 py-2.5 rounded-xl font-bold transition flex items-center gap-2 text-sm">
+                    <i class="fa-solid fa-download"></i> Sample Format
+                </button>
+            </div>
+            <p class="text-xs text-slate-500 mb-5 bg-slate-50 border border-slate-100 rounded-xl p-3 leading-relaxed">
+                <b>Excel format:</b> one row per checklist point. Columns <b>Section</b> (optional, e.g. "Bank", "GST"), <b>Checklist Item</b> (required) and <b>Guidance</b> (optional). Re-uploading to an existing checklist keeps progress on points whose text is unchanged.
+            </p>
+            <div id="paTemplatesList" class="space-y-2"></div>
+        </div>
+    </div>
+</div>
+
+<!-- ==================== TEMPLATE UPLOAD PREVIEW MODAL ==================== -->
+<div id="paUploadPreviewModal" class="hidden fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl w-full max-w-3xl max-h-[90vh] shadow-2xl border border-slate-100 flex flex-col">
+        <div class="p-6 border-b border-slate-100 shrink-0">
+            <h3 class="text-xl font-black text-slate-900">Review Uploaded Checklist</h3>
+            <p id="paUploadSummary" class="text-xs text-slate-500 font-medium mt-1"></p>
+        </div>
+        <div class="p-6 overflow-y-auto os-scroll space-y-4">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Save As</label>
+                    <select id="paUploadTarget" onchange="paToggleUploadName()" class="w-full rounded-xl border border-slate-200 p-3 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-emerald-500 bg-white"></select>
+                </div>
+                <div id="paUploadNameWrap">
+                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Checklist Name</label>
+                    <input type="text" id="paUploadName" class="w-full rounded-xl border border-slate-200 p-3 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-emerald-500" placeholder="e.g. Quarterly Internal Audit">
+                </div>
+            </div>
+            <div class="border border-slate-100 rounded-xl overflow-hidden">
+                <table class="min-w-full text-sm">
+                    <thead class="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                        <tr><th class="text-left px-3 py-2 w-10">#</th><th class="text-left px-3 py-2">Section</th><th class="text-left px-3 py-2">Checklist Item</th><th class="text-left px-3 py-2">Guidance</th></tr>
+                    </thead>
+                    <tbody id="paUploadPreviewBody" class="divide-y divide-slate-50"></tbody>
+                </table>
+            </div>
+        </div>
+        <div class="p-6 border-t border-slate-100 flex gap-3 shrink-0">
+            <button onclick="paCloseModal('paUploadPreviewModal')" class="flex-1 py-3 rounded-xl font-black text-xs uppercase tracking-widest text-slate-600 bg-slate-100 hover:bg-slate-200 transition">Cancel</button>
+            <button onclick="paConfirmTemplateUpload()" id="paUploadSaveBtn" class="flex-1 py-3 rounded-xl font-black text-xs uppercase tracking-widest text-white bg-emerald-600 hover:bg-emerald-700 shadow-lg shadow-emerald-200 transition">Save Checklist</button>
+        </div>
+    </div>
+</div>

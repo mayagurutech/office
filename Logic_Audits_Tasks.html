@@ -4,6 +4,8 @@
     // ==========================================
 
     let globalAuditsList = [];
+    let globalCustomTasksList = [];
+    let globalCustomTasksAckMap = {};
     let currentActiveClient = null; // Used for the Client Audit Board
     let activeTask = null;          // Universal for Task Board & Custom Tasks
     // --- SHARED UTILS (Moved to Core) ---
@@ -35,6 +37,8 @@
 
         if (tasksRes.data) {
             tasksRes.data.forEach(task => {
+                const isCancelled = task.is_custom && task.custom_task_name && task.custom_task_name.endsWith(' [Cancelled]');
+                if (isCancelled) return;
                 const clientName = task.clients ? task.clients.display_name : 'Unknown Client';
                 const taskName = task.is_custom ? task.custom_task_name : (task.services?.service_type || 'Task');
                 
@@ -91,23 +95,62 @@
     // ==========================================
     // AUDIT STATUS BOARD LOGIC (Client-Centric)
     // ==========================================
+    function safeGetSessionStorage(key) {
+        try {
+            return sessionStorage.getItem(key);
+        } catch (e) {
+            return window[key] || null;
+        }
+    }
+
+    function safeSetSessionStorage(key, val) {
+        try {
+            sessionStorage.setItem(key, val);
+        } catch (e) {
+            window[key] = val;
+        }
+    }
+
+    window.auditIsLoading = false;
+
+    function setupAuditScrollListener() {
+        const viewContainer = document.getElementById('view-audits');
+        if (viewContainer && !viewContainer.dataset.scrollListenerAttached) {
+            viewContainer.addEventListener('scroll', () => {
+                if (window.auditIsLoading) return;
+                safeSetSessionStorage('audit_scroll_top', viewContainer.scrollTop);
+            });
+            viewContainer.dataset.scrollListenerAttached = 'true';
+        }
+    }
+
     function populateAuditFilters() {
         const filterSelect = document.getElementById('auditServiceFilter');
         if (!filterSelect) return;
+        const savedVal = filterSelect.value;
         filterSelect.innerHTML = '<option value="">All Audit Services</option>';
         const auditServices = globalServicesList.filter(s => s.is_audit);
         auditServices.forEach(s => {
             filterSelect.innerHTML += `<option value="${s.service_type}">${s.service_type}</option>`;
         });
+        if (savedVal) {
+            filterSelect.value = savedVal;
+        }
     }
 
     async function loadAuditsData() {
         const container = document.getElementById('audit-list-container');
-        container.innerHTML = '<div class="text-center p-8 text-gray-500"><i class="fa-solid fa-spinner fa-spin text-2xl mb-2"></i><br>Loading active audits...</div>';
+        if (container) {
+            container.innerHTML = '<div class="text-center p-8 text-gray-500"><i class="fa-solid fa-spinner fa-spin text-2xl mb-2"></i><br>Loading active audits...</div>';
+        }
+        
+        setupAuditScrollListener();
+        window.auditIsLoading = true;
         
         // Refresh cache to ensure we have the absolute latest client tracking statuses
         await refreshGlobalCache();
         await fetchTeamMembers();
+        await fetchSubsidySettings(); // Ensure checklist categories are loaded
         populateAuditFilters();
 
         const { data: visSettings } = await supabaseClient.from('page_visibility_settings').select('enrolled_services').eq('page_id', 'view-audits').single();
@@ -115,10 +158,10 @@
         const allowedServices = (visSettings && visSettings.enrolled_services) ? visSettings.enrolled_services : fallbackServices;
         window.globalAuditAllowedServices = allowedServices;
         
+        const selectedYear = document.getElementById('auditYearFilter')?.value || 'FY_2025_26';
+        
         const activeAuditClients = globalClientsList.filter(c => {
-            if (!c.standard_services) return false;
-            const clientServices = c.standard_services.split(',').map(s => s.trim().toLowerCase());
-            return allowedServices.some(as => clientServices.includes(as.toLowerCase()));
+            return allowedServices.some(as => window.isClientVisibleForPeriod(c, as, selectedYear, 'yearly'));
         });
 
         // Fetch follow-up dates and today's updates for these clients
@@ -127,23 +170,55 @@
             const todayStart = new Date();
             todayStart.setHours(0,0,0,0);
 
-            const [followupRes, todayLogsRes] = await Promise.all([
-                supabaseClient
+            const [followupRes, todayLogsRes, trackingLogsRes, invoicesRes] = await Promise.all([
+                fetchAllRows((from, to) => supabaseClient
                     .from('task_logs')
                     .select('client_id, note, timestamp')
                     .in('client_id', clientIds)
                     .ilike('note', '%[AUDIT_FOLLOWUP]%')
-                    .order('timestamp', { ascending: false }),
+                    .order('timestamp', { ascending: false })
+                    .order('log_id', { ascending: false })
+                    .range(from, to)),
                 supabaseClient
                     .from('task_logs')
                     .select('client_id, note, bank_status, sales_status, ledger_status, others_status')
                     .in('client_id', clientIds)
                     .is('task_id', null)
-                    .gte('timestamp', todayStart.toISOString())
+                    .gte('timestamp', todayStart.toISOString()),
+                fetchAllRows((from, to) => supabaseClient
+                    .from('task_logs')
+                    .select('client_id, note, timestamp')
+                    .in('client_id', clientIds)
+                    .ilike('note', '[AUDIT_TRACKING] %')
+                    .order('timestamp', { ascending: true })
+                    .order('log_id', { ascending: true })
+                    .range(from, to)),
+                supabaseClient
+                    .from('invoices')
+                    .select('client_id, service_name, amount, status, firm_id')
+                    .in('client_id', clientIds)
+                    .neq('status', 'Cancelled')
             ]);
                 
             const followupLogs = followupRes.data || [];
             const todayLogs = todayLogsRes.data || [];
+            const trackingLogs = trackingLogsRes.data || [];
+            const invoicesList = invoicesRes.data || [];
+
+            const billedMap = {};
+            invoicesList.forEach(inv => {
+                const sName = inv.service_name || '';
+                const cleanYear = selectedYear.replace('_', ' '); // e.g. "FY 2025-26"
+                if (sName.toLowerCase().includes('audit') && sName.includes(cleanYear)) {
+                    const baseAmt = parseFloat(inv.amount) || 0;
+                    const calc = window.getGstCalculation ? window.getGstCalculation(inv.firm_id, inv.client_id, baseAmt) : { total: baseAmt };
+                    const finalAmt = calc.total;
+                    
+                    billedMap[inv.client_id] = {
+                        amount: finalAmt
+                    };
+                }
+            });
 
             const followupMap = {};
             if (followupLogs) {
@@ -173,10 +248,53 @@
                     }
                 });
             }
+
+            const trackingMap = {};
+            trackingLogs.forEach(log => {
+                const payload = log.note.replace('[AUDIT_TRACKING] ', '').trim();
+                const parts = payload.split('|');
+                if (parts.length >= 7) {
+                    const cId = parts[0];
+                    const period = parts[1];
+                    if (period === selectedYear) {
+                        trackingMap[cId] = {
+                            status: parts[2],
+                            bank: parts[3] === 'null' ? null : parts[3],
+                            sales: parts[4] === 'null' ? null : parts[4],
+                            ledger: parts[5] === 'null' ? null : parts[5],
+                            others: parts[6] === 'null' ? null : parts[6]
+                        };
+                    }
+                }
+            });
             
             activeAuditClients.forEach(c => {
                 c.followup_date = followupMap[c.client_id] || '';
                 c.updated_today = !!updatedTodayMap[c.client_id];
+
+                const bill = billedMap[c.client_id];
+                if (bill) {
+                    c.is_billed = true;
+                    c.billed_amount = bill.amount;
+                } else {
+                    c.is_billed = false;
+                    c.billed_amount = 0;
+                }
+
+                const tracking = trackingMap[c.client_id];
+                if (tracking) {
+                    c.audit_status = tracking.status;
+                    c.audit_bank = tracking.bank;
+                    c.audit_sales = tracking.sales;
+                    c.audit_ledger = tracking.ledger;
+                    c.audit_others = tracking.others;
+                } else if (selectedYear !== 'FY_2025_26') {
+                    c.audit_status = 'Not yet started';
+                    c.audit_bank = null;
+                    c.audit_sales = null;
+                    c.audit_ledger = null;
+                    c.audit_others = null;
+                }
             });
         }
 
@@ -184,18 +302,157 @@
         filterAudits();
     }
 
+    function getAuditMasterChecklist(auditType) {
+        const checklists = window.globalSubsidyChecklistsCache || (typeof globalSubsidyChecklistsCache !== 'undefined' ? globalSubsidyChecklistsCache : {});
+        if (!auditType) return [];
+        
+        const cleanType = auditType.toUpperCase().replace(/^AUDIT_/, '').trim();
+        const candidateKeys = [
+            `AUDIT_${cleanType}`,
+            `AUDIT_${auditType.toUpperCase()}`
+        ];
+        
+        for (const key of candidateKeys) {
+            if (checklists[key] && Array.isArray(checklists[key]) && checklists[key].length > 0) {
+                return checklists[key];
+            }
+        }
+        
+        const allKeys = Object.keys(checklists).filter(k => k.startsWith('AUDIT_'));
+        const matchedKey = allKeys.find(k => {
+            const kClean = k.substring(6).trim();
+            return kClean === cleanType || kClean.includes(cleanType) || cleanType.includes(kClean);
+        });
+        
+        if (matchedKey && checklists[matchedKey] && Array.isArray(checklists[matchedKey])) {
+            return checklists[matchedKey];
+        }
+        
+        return [];
+    }
+
+    function getAuditClientStatusMap(clientId, auditType, selectedYear) {
+        if (!window.globalChecklistStatusMap || !window.globalChecklistStatusMap[clientId]) {
+            return {};
+        }
+        const clientMap = window.globalChecklistStatusMap[clientId];
+        const mapKey = `${auditType}|${selectedYear}`;
+        
+        if (clientMap[mapKey] && Object.keys(clientMap[mapKey]).length > 0) {
+            return clientMap[mapKey];
+        }
+        
+        if (selectedYear === 'FY_2025_26' && clientMap[auditType] && Object.keys(clientMap[auditType]).length > 0) {
+            return clientMap[auditType];
+        }
+        
+        const cleanType = (auditType || '').toLowerCase().replace(/^audit_/, '').trim();
+        const foundKey = Object.keys(clientMap).find(k => {
+            const kLower = k.toLowerCase().replace(/^audit_/, '').trim();
+            const kMapKey = `${cleanType}|${selectedYear.toLowerCase()}`;
+            return kLower === kMapKey || (selectedYear === 'FY_2025_26' && kLower === cleanType) || kLower.startsWith(cleanType);
+        });
+        
+        if (foundKey && clientMap[foundKey]) {
+            return clientMap[foundKey];
+        }
+        
+        return {};
+    }
+
+    function computeAuditCurrentStage(masterList, statusMap) {
+        if (!masterList || masterList.length === 0) {
+            return 'Not Configured';
+        }
+        
+        let lastCompletedStage = 'Not Started';
+        let foundNotCompleted = false;
+        
+        for (let item of masterList) {
+            const stage = item["Stage Name"] || item["stage"];
+            if (!stage) continue;
+            
+            let isDone = false;
+            if (statusMap && (statusMap[stage] === true || statusMap[stage] === 'NIL')) {
+                isDone = true;
+            } else if (statusMap) {
+                const cleanStage = stage.toLowerCase().trim();
+                const matchingKey = Object.keys(statusMap).find(k => k.toLowerCase().trim() === cleanStage);
+                if (matchingKey && (statusMap[matchingKey] === true || statusMap[matchingKey] === 'NIL')) {
+                    isDone = true;
+                }
+            }
+            
+            if (isDone) {
+                lastCompletedStage = stage;
+            } else {
+                if (!foundNotCompleted) {
+                    lastCompletedStage = `Pending: ${stage}`;
+                }
+                foundNotCompleted = true;
+            }
+        }
+        
+        if (!foundNotCompleted) {
+            return 'All Stages Completed';
+        }
+        
+        return lastCompletedStage;
+    }
+
+    function getClientAuditType(client, selectedYear) {
+        const serviceFilter = document.getElementById('auditServiceFilter')?.value || '';
+        if (serviceFilter) {
+            return serviceFilter;
+        }
+
+        const configuredAuditTypes = (window.globalSubsidyCategoriesCache || [])
+            .filter(c => c.toUpperCase().startsWith('AUDIT_'))
+            .map(c => c.substring(6).trim());
+        
+        // 1. Check if client has AUDIT checklist logs matching configured audit types
+        if (window.globalChecklistStatusMap && window.globalChecklistStatusMap[client.client_id]) {
+            const clientLogs = window.globalChecklistStatusMap[client.client_id];
+            const matchingKeys = Object.keys(clientLogs).filter(k => {
+                const rawType = (k.includes('|') ? k.split('|')[0] : k).replace(/^AUDIT_/i, '').trim();
+                const matchesAuditType = configuredAuditTypes.some(at => at.toLowerCase() === rawType.toLowerCase());
+                const matchesYear = k.includes('|') ? k.endsWith(`|${selectedYear}`) : (selectedYear === 'FY_2025_26');
+                return matchesAuditType && matchesYear;
+            });
+            if (matchingKeys.length > 0) {
+                return matchingKeys[0].split('|')[0].replace(/^AUDIT_/i, '').trim();
+            }
+        }
+        
+        // 2. Check enrolled services matching configured audit types or allowed audit services
+        const auditServiceNames = window.globalAuditAllowedServices || (typeof globalServicesList !== 'undefined' ? globalServicesList.filter(s => s.is_audit).map(s => s.service_type) : []);
+        const enrolled = client.standard_services ? client.standard_services.split(',').map(s => s.trim()) : [];
+        
+        const matchedWithConfigured = enrolled.find(s => configuredAuditTypes.some(at => at.toLowerCase() === s.toLowerCase() || s.toLowerCase().includes(at.toLowerCase()) || at.toLowerCase().includes(s.toLowerCase())));
+        if (matchedWithConfigured) return matchedWithConfigured;
+
+        const matchedWithAuditServices = enrolled.find(s => auditServiceNames.some(asn => asn.toLowerCase() === s.toLowerCase()));
+        if (matchedWithAuditServices) return matchedWithAuditServices;
+        
+        const fallbackAudit = enrolled.find(s => s.toLowerCase().includes('audit'));
+        if (fallbackAudit) return fallbackAudit;
+        
+        return configuredAuditTypes.length > 0 ? configuredAuditTypes[0] : '';
+    }
+
     function renderAuditsTable(clients) {
         const container = document.getElementById('audit-list-container');
-        container.innerHTML = '';
-        
         if(!clients || clients.length === 0) return container.innerHTML = '<div class="text-center p-8 text-gray-500 border border-dashed rounded-xl bg-white">No active audits match your filters. Go to Compliance Manager to Star a service.</div>';
 
-        const auditServiceNames = globalServicesList.filter(s => s.is_audit).map(s => s.service_type);
+        const auditServiceNames = window.globalAuditAllowedServices || globalServicesList.filter(s => s.is_audit).map(s => s.service_type);
 
+        let html = '';
         clients.forEach((client, index) => {
             // Find exactly which audit services triggered this client to appear
             const enrolled = client.standard_services ? client.standard_services.split(',').map(s => s.trim()) : [];
-            const activeServices = enrolled.filter(s => auditServiceNames.includes(s)).join(', ');
+            const activeServices = enrolled.map(s => {
+                return auditServiceNames.find(asn => asn.toLowerCase() === s.toLowerCase());
+            }).filter(Boolean).join(', ');
             
             // Find assignee
             let assigneeName = 'Unassigned';
@@ -217,24 +474,45 @@
             
             const assigneeBadge = assigneeName !== 'Unassigned' ? `<span class="ml-2 px-1.5 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded text-[9px] font-bold uppercase tracking-wider inline-flex items-center"><i class="fa-solid fa-user-tie mr-1"></i>${assigneeName}</span>` : '';
 
+            let billedBadge = '';
+            if (client.is_billed) {
+                billedBadge = `<span class="ml-2 px-1.5 py-0.5 bg-blue-50 text-blue-600 border border-blue-100 rounded text-[9px] font-bold uppercase tracking-wider inline-flex items-center" title="Billed"><i class="fa-solid fa-circle-check text-blue-500 mr-1"></i>₹${client.billed_amount.toLocaleString('en-IN', {maximumFractionDigits: 0})}</span>`;
+            }
+
             const badgeClass = "bg-indigo-50 text-indigo-700 px-3 py-2.5 rounded-md text-xs font-medium w-full block text-left min-h-[40px] flex items-center";
 
             let st = client.audit_status || 'Not yet started';
             if (st === 'Pending') st = 'Not yet started';
             if (st === 'In Progress') st = 'In progress';
             
-            let cardClass = "bg-white rounded-xl shadow-sm border border-gray-100 border-l-4 border-l-gray-400 p-5 mb-4 cursor-pointer hover:shadow-md hover:border-gray-300 transition flex flex-col lg:flex-row items-start lg:items-center gap-6";
+            let cardClass = "bg-white rounded-xl shadow-sm border border-gray-100 border-l-4 border-l-gray-400 p-4 mb-4 cursor-pointer hover:shadow-md hover:border-gray-300 transition flex flex-col xl:flex-row items-start xl:items-center gap-4";
             if (st === 'Not yet started') {
-                cardClass = "bg-yellow-50 rounded-xl shadow-sm border border-yellow-200 border-l-4 border-l-yellow-400 p-5 mb-4 cursor-pointer hover:shadow-md hover:border-yellow-300 transition flex flex-col lg:flex-row items-start lg:items-center gap-6";
+                cardClass = "bg-yellow-50 rounded-xl shadow-sm border border-yellow-200 border-l-4 border-l-yellow-400 p-4 mb-4 cursor-pointer hover:shadow-md hover:border-yellow-300 transition flex flex-col xl:flex-row items-start xl:items-center gap-4";
             } else if (st === 'Completed') {
-                cardClass = "bg-blue-50 rounded-xl shadow-sm border border-blue-200 border-l-4 border-l-blue-500 p-5 mb-4 cursor-pointer hover:shadow-md hover:border-blue-300 transition flex flex-col lg:flex-row items-start lg:items-center gap-6";
+                cardClass = "bg-blue-50 rounded-xl shadow-sm border border-blue-200 border-l-4 border-l-blue-500 p-4 mb-4 cursor-pointer hover:shadow-md hover:border-blue-300 transition flex flex-col xl:flex-row items-start xl:items-center gap-4";
             }
 
-            const followupBadge = client.followup_date ? `<span class="ml-2 px-1.5 py-0.5 bg-rose-50 text-rose-700 border border-rose-100 rounded text-[9px] font-bold uppercase tracking-wider inline-flex items-center"><i class="fa-solid fa-clock mr-1"></i>Followup: ${client.followup_date}</span>` : '';
+            let followupBadge = '';
+            if (client.followup_date) {
+                const today = new Date(); today.setHours(0,0,0,0);
+                const parts = client.followup_date.split('-');
+                const fDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+                fDate.setHours(0,0,0,0);
+                
+                let tagClass = '';
+                if (fDate < today) {
+                    tagClass = 'bg-red-50 text-red-700 border-red-100';
+                } else if (fDate.getTime() === today.getTime()) {
+                    tagClass = 'bg-pink-50 text-pink-700 border-pink-100';
+                } else {
+                    tagClass = 'bg-emerald-50 text-emerald-700 border-emerald-100';
+                }
+                
+                followupBadge = `<span class="ml-2 px-1.5 py-0.5 ${tagClass} rounded text-[9px] font-bold uppercase tracking-wider inline-flex items-center border"><i class="fa-solid fa-clock mr-1"></i>Followup: ${client.followup_date}</span>`;
+            }
 
             let ackCheckboxHtml = '';
-            const isOverdue = client.followup_date ? (new Date(client.followup_date) < new Date().setHours(0,0,0,0)) : false;
-            if (st !== 'Completed' && !isOverdue) {
+            if (st !== 'Completed') {
                 if (client.updated_today) {
                     ackCheckboxHtml = `
                         <span onclick="event.stopPropagation()" class="ml-2 px-1.5 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded text-[9px] font-bold uppercase tracking-wider inline-flex items-center"><i class="fa-solid fa-square-check mr-1"></i>Checked</span>
@@ -246,45 +524,123 @@
                 }
             }
 
-            container.innerHTML += `
+            // Current Stage from checklist
+            const selectedYear = document.getElementById('auditYearFilter')?.value || 'FY_2025_26';
+            const auditType = getClientAuditType(client, selectedYear);
+            const masterList = getAuditMasterChecklist(auditType);
+            const statusMap = getAuditClientStatusMap(client.client_id, auditType, selectedYear);
+            const currentStage = computeAuditCurrentStage(masterList, statusMap);
+
+            // Check DPT3 status if Company Audit is applicable
+            let dpt3BadgeHtml = '';
+            const isCompanyAuditEnrolled = (client.standard_services && client.standard_services.toLowerCase().includes('company audit'));
+            let hasCompanyAuditKey = false;
+            if (window.globalChecklistStatusMap && window.globalChecklistStatusMap[client.client_id]) {
+                hasCompanyAuditKey = Object.keys(window.globalChecklistStatusMap[client.client_id]).some(k => k.toLowerCase().startsWith('company audit'));
+            }
+
+            if (isCompanyAuditEnrolled || hasCompanyAuditKey) {
+                let dpt3Val = false;
+                if (window.globalChecklistStatusMap && window.globalChecklistStatusMap[client.client_id]) {
+                    const clientMaps = window.globalChecklistStatusMap[client.client_id];
+                    const matchingKey = Object.keys(clientMaps).find(k => k.toLowerCase().startsWith('company audit'));
+                    if (matchingKey && clientMaps[matchingKey]) {
+                        const statusMap = clientMaps[matchingKey];
+                        const dpt3StageKey = Object.keys(statusMap).find(s => s.toLowerCase().includes('dpt3'));
+                        if (dpt3StageKey) {
+                            dpt3Val = statusMap[dpt3StageKey];
+                        }
+                    }
+                }
+
+                if (dpt3Val === true) {
+                    dpt3BadgeHtml = `<span class="ml-1.5 text-[9px] font-black bg-emerald-50 text-emerald-700 border border-emerald-200 px-1.5 py-0.5 rounded tracking-tight inline-flex items-center gap-1 shadow-2xs" title="DPT3 Sent to CS: Done"><i class="fa-solid fa-circle-check text-emerald-500 text-[9px]"></i> DPT3 - <span class="text-emerald-600 font-extrabold">✓</span></span>`;
+                } else if (dpt3Val === 'NIL') {
+                    dpt3BadgeHtml = `<span class="ml-1.5 text-[9px] font-black bg-amber-100/90 text-amber-800 border border-amber-300 px-1.5 py-0.5 rounded tracking-tight inline-flex items-center gap-1 shadow-2xs" title="DPT3 Sent to CS: NIL"><i class="fa-solid fa-minus text-amber-600 text-[8px]"></i> DPT3 - NIL</span>`;
+                } else {
+                    dpt3BadgeHtml = `<span class="ml-1.5 text-[9px] font-black bg-red-50 text-red-700 border border-red-200 px-1.5 py-0.5 rounded tracking-tight inline-flex items-center gap-1 shadow-2xs" title="DPT3 Sent to CS: Pending"><i class="fa-solid fa-circle-xmark text-red-500 text-[9px]"></i> DPT3 - <span class="text-red-600 font-extrabold">✗</span></span>`;
+                }
+            }
+
+            let rightBoxesHtml = '';
+            if (st === 'Completed') {
+                rightBoxesHtml = `
+                <div class="w-full xl:w-3/4 grid grid-cols-1 md:grid-cols-5 gap-3 items-center">
+                    <div>
+                        <span class="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">Checklist Stage</span>
+                        <div class="${badgeClass.replace('bg-indigo-50', 'bg-indigo-100/50').replace('text-indigo-700', 'text-indigo-800')}">${currentStage}</div>
+                    </div>
+                    <div class="md:col-span-4 flex items-center justify-center p-3 bg-blue-100/60 border border-blue-200/80 rounded-xl min-h-[40px] shadow-inner">
+                        <span class="text-xs font-black text-blue-900 tracking-widest uppercase flex items-center gap-2">
+                            <i class="fa-solid fa-circle-check text-blue-600 text-sm"></i> Audit done
+                        </span>
+                    </div>
+                </div>`;
+            } else {
+                rightBoxesHtml = `
+                <div class="w-full xl:w-3/4 grid grid-cols-2 md:grid-cols-5 gap-3">
+                    <div><span class="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">Checklist Stage</span><div class="${badgeClass.replace('bg-indigo-50', 'bg-indigo-100/50').replace('text-indigo-700', 'text-indigo-800')}">${currentStage}</div></div>
+                    <div><span class="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">Bank</span><div class="${badgeClass}">${client.audit_bank || '-'}</div></div>
+                    <div><span class="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">Sales/Pur.</span><div class="${badgeClass}">${client.audit_sales || '-'}</div></div>
+                    <div><span class="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">Cash & Credit</span><div class="${badgeClass}">${client.audit_ledger || '-'}</div></div>
+                    <div><span class="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">Others</span><div class="${badgeClass}">${client.audit_others || '-'}</div></div>
+                </div>`;
+            }
+
+            html += `
             <div onclick='openAuditDrawer(${JSON.stringify(client).replace(/'/g, "&#39;")})' class="${cardClass}">
-                <div class="w-full lg:w-1/3 flex items-start gap-4">
+                <div class="w-full xl:w-1/4 flex items-start gap-3">
                     <span class="text-gray-400 font-bold text-sm mt-0.5">#${index + 1}</span>
                     <div>
-                        <span class="text-xs font-bold text-indigo-700 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded tracking-wider uppercase mb-1.5 inline-block">${activeServices}</span>
-                        <div class="flex items-center flex-wrap gap-y-1">
-                            <h4 class="font-bold text-gray-900 text-base hover:text-blue-600 hover:underline cursor-pointer" onclick="event.stopPropagation(); openUniversalClientProfile('${client.client_id}')">${client.display_name}</h4>
-                            ${assigneeBadge}
+                        <div class="flex items-center flex-wrap gap-1 mb-1.5">
+                            <span class="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded tracking-wider uppercase inline-block">${activeServices}</span>
+                            ${dpt3BadgeHtml}
                         </div>
-                        <p class="text-xs font-bold text-gray-400 mt-1 uppercase tracking-wider flex items-center flex-wrap gap-1">${client.entity_type || 'Entity'}${followupBadge}${ackCheckboxHtml}</p>
+                        <div class="flex items-center flex-wrap gap-y-1">
+                            <h4 class="font-bold text-gray-900 text-sm hover:text-blue-600 hover:underline cursor-pointer" onclick="event.stopPropagation(); openUniversalClientProfile('${client.client_id}')">${client.display_name}</h4>
+                            ${assigneeBadge}
+                            ${billedBadge}
+                        </div>
+                        <p class="text-[9px] font-bold text-gray-400 mt-1 uppercase tracking-wider flex items-center flex-wrap gap-1">${client.client_code ? client.client_code + ' • ' : ''}${client.entity_type || 'Entity'}${followupBadge}${ackCheckboxHtml}</p>
                     </div>
                 </div>
-                <div class="w-full lg:w-2/3 grid grid-cols-2 md:grid-cols-4 gap-4">
-                    <div><span class="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-1.5">Bank</span><div class="${badgeClass}">${client.audit_bank || '-'}</div></div>
-                    <div><span class="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-1.5">Sales/Pur.</span><div class="${badgeClass}">${client.audit_sales || '-'}</div></div>
-                    <div><span class="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-1.5">Cash & Credit</span><div class="${badgeClass}">${client.audit_ledger || '-'}</div></div>
-                    <div><span class="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-1.5">Others</span><div class="${badgeClass}">${client.audit_others || '-'}</div></div>
-                </div>
+                ${rightBoxesHtml}
             </div>`;
         });
+        container.innerHTML = html;
     }
 
     function filterAudits() {
         const query = document.getElementById('auditSearchInput').value.toLowerCase();
         const serviceQuery = document.getElementById('auditServiceFilter').value;
         const assignQuery = document.getElementById('auditAssignFilter').value;
+        if (assignQuery === 'all') window.auditDueFilterStatus = 'all';
         
         const filtered = globalAuditsList.filter(client => {
-            const clientMatch = client.display_name?.toLowerCase().includes(query) || false;
+            if (window.auditDueFilterStatus === 'due') {
+                if (client.audit_status === 'Completed') return false;
+                const isOverdue = client.followup_date ? (new Date(client.followup_date) < new Date().setHours(0,0,0,0)) : false;
+                if (isOverdue) return false;
+            } else if (window.auditDueFilterStatus === 'overdue') {
+                if (client.audit_status === 'Completed') return false;
+                const isOverdue = client.followup_date ? (new Date(client.followup_date) < new Date().setHours(0,0,0,0)) : false;
+                if (!isOverdue) return false;
+            }
+            
+            const clientMatch = client.display_name?.toLowerCase().includes(query) || 
+                                (client.client_code && client.client_code.toLowerCase().includes(query)) || 
+                                false;
             
             const enrolled = client.standard_services ? client.standard_services.split(',').map(s => s.trim()) : [];
-            const auditServiceNames = globalServicesList.filter(s => s.is_audit).map(s => s.service_type);
-            const activeAuditServices = enrolled.filter(s => auditServiceNames.includes(s));
+            const auditServiceNames = window.globalAuditAllowedServices || globalServicesList.filter(s => s.is_audit).map(s => s.service_type);
+            const activeAuditServices = enrolled.map(s => {
+                return auditServiceNames.find(asn => asn.toLowerCase() === s.toLowerCase());
+            }).filter(Boolean);
             
             const serviceSearchMatch = activeAuditServices.some(s => s.toLowerCase().includes(query));
             const dropdownMatch = serviceQuery === "" || activeAuditServices.includes(serviceQuery);
             
-            // Assignment logic
+            // Assignment and Archiving logic
             let assignmentMatch = true;
             if (assignQuery === 'mine') {
                 const allowedServices = window.globalAuditAllowedServices || [];
@@ -297,7 +653,12 @@
                     ) && 
                     a.maker_id === currentUser.id
                 );
-                assignmentMatch = !!assignment;
+                assignmentMatch = !!assignment && !client.is_billed;
+            } else if (assignQuery === 'archived') {
+                assignmentMatch = !!client.is_billed;
+            } else {
+                // 'all' audits excludes archived (billed) tasks by default
+                assignmentMatch = !client.is_billed;
             }
             
             return (clientMatch || serviceSearchMatch) && dropdownMatch && assignmentMatch;
@@ -320,6 +681,17 @@
         }
 
         renderAuditsTable(filtered);
+
+        if (window.auditIsLoading) {
+            window.auditIsLoading = false;
+            const lastScrollPos = safeGetSessionStorage('audit_scroll_top') ? parseInt(safeGetSessionStorage('audit_scroll_top'), 10) : 0;
+            if (lastScrollPos > 0) {
+                setTimeout(() => {
+                    const viewContainer = document.getElementById('view-audits');
+                    if (viewContainer) viewContainer.scrollTop = lastScrollPos;
+                }, 100);
+            }
+        }
     }
 
     function updateAuditStatusColor(selectEl) {
@@ -374,14 +746,196 @@
         
         document.getElementById('drawNote').value = ''; 
         document.getElementById('drawFollowupDate').value = ''; // Clear
+
+        // 3.5. Ensure client-specific audit checklist status maps are fully fetched & populated from DB
+        try {
+            const { data: clientChecklistLogs } = await supabaseClient
+                .from('task_logs')
+                .select('client_id, note, timestamp, user_id')
+                .eq('client_id', client.client_id)
+                .like('note', '[AUDIT_CHECKLIST_STATUS]%')
+                .order('timestamp', { ascending: false });
+
+            if (clientChecklistLogs && clientChecklistLogs.length > 0) {
+                if (!window.globalChecklistStatusMap) window.globalChecklistStatusMap = {};
+                if (!window.globalChecklistRemarksMap) window.globalChecklistRemarksMap = {};
+                if (!window.globalChecklistUsersMap) window.globalChecklistUsersMap = {};
+                if (!window.globalChecklistAdminStatusMap) window.globalChecklistAdminStatusMap = {};
+                if (!window.globalChecklistAdminUsersMap) window.globalChecklistAdminUsersMap = {};
+
+                clientChecklistLogs.forEach(log => {
+                    if (!log.note) return;
+                    const cleanNote = log.note.replace('[AUDIT_CHECKLIST_STATUS] ', '');
+                    const parts = cleanNote.split('|');
+                    const typePart = parts.find(p => p.startsWith('TYPE:'));
+                    const stagePart = parts.find(p => p.startsWith('STAGE:'));
+                    const statusPart = parts.find(p => p.startsWith('STATUS:'));
+                    const remarkPart = parts.find(p => p.startsWith('REMARK:'));
+                    const yearPart = parts.find(p => p.startsWith('YEAR:'));
+                    if (typePart && stagePart && statusPart) {
+                        const cat = typePart.replace('TYPE:', '');
+                        const doc = stagePart.replace('STAGE:', '');
+                        const year = yearPart ? yearPart.replace('YEAR:', '') : 'FY_2025_26';
+                        let status = statusPart.replace('STATUS:', '');
+                        if (status === 'true') status = true;
+                        else if (status === 'false') status = false;
+                        
+                        if (!window.globalChecklistStatusMap[log.client_id]) window.globalChecklistStatusMap[log.client_id] = {};
+                        const mapKey = `${cat}|${year}`;
+                        if (!window.globalChecklistStatusMap[log.client_id][mapKey]) window.globalChecklistStatusMap[log.client_id][mapKey] = {};
+                        if (window.globalChecklistStatusMap[log.client_id][mapKey][doc] === undefined) {
+                            window.globalChecklistStatusMap[log.client_id][mapKey][doc] = status;
+                        }
+                        if (year === 'FY_2025_26') {
+                            if (!window.globalChecklistStatusMap[log.client_id][cat]) window.globalChecklistStatusMap[log.client_id][cat] = {};
+                            if (window.globalChecklistStatusMap[log.client_id][cat][doc] === undefined) {
+                                window.globalChecklistStatusMap[log.client_id][cat][doc] = status;
+                            }
+                        }
+
+                        if (remarkPart) {
+                            const remark = remarkPart.replace('REMARK:', '');
+                            if (!window.globalChecklistRemarksMap[log.client_id]) window.globalChecklistRemarksMap[log.client_id] = {};
+                            if (!window.globalChecklistRemarksMap[log.client_id][mapKey]) window.globalChecklistRemarksMap[log.client_id][mapKey] = {};
+                            if (window.globalChecklistRemarksMap[log.client_id][mapKey][doc] === undefined) {
+                                window.globalChecklistRemarksMap[log.client_id][mapKey][doc] = remark;
+                            }
+                            if (year === 'FY_2025_26') {
+                                if (!window.globalChecklistRemarksMap[log.client_id][cat]) window.globalChecklistRemarksMap[log.client_id][cat] = {};
+                                if (window.globalChecklistRemarksMap[log.client_id][cat][doc] === undefined) {
+                                    window.globalChecklistRemarksMap[log.client_id][cat][doc] = remark;
+                                }
+                            }
+                        }
+
+                        const userPart = parts.find(p => p.startsWith('USER_ID:'));
+                        let checkerId = log.user_id;
+                        if (userPart) {
+                            const parsedUser = userPart.replace('USER_ID:', '').trim();
+                            if (parsedUser) checkerId = parsedUser;
+                        }
+                        if (checkerId && status === true) {
+                            if (!window.globalChecklistUsersMap[log.client_id]) window.globalChecklistUsersMap[log.client_id] = {};
+                            if (!window.globalChecklistUsersMap[log.client_id][mapKey]) window.globalChecklistUsersMap[log.client_id][mapKey] = {};
+                            if (window.globalChecklistUsersMap[log.client_id][mapKey][doc] === undefined) {
+                                window.globalChecklistUsersMap[log.client_id][mapKey][doc] = checkerId;
+                            }
+                            if (year === 'FY_2025_26') {
+                                if (!window.globalChecklistUsersMap[log.client_id][cat]) window.globalChecklistUsersMap[log.client_id][cat] = {};
+                                if (window.globalChecklistUsersMap[log.client_id][cat][doc] === undefined) {
+                                    window.globalChecklistUsersMap[log.client_id][cat][doc] = checkerId;
+                                }
+                            }
+                        }
+
+                        const adminStatusPart = parts.find(p => p.startsWith('ADMIN_STATUS:'));
+                        const adminUserPart = parts.find(p => p.startsWith('ADMIN_USER_ID:'));
+                        if (adminStatusPart) {
+                            const adminStatus = adminStatusPart.replace('ADMIN_STATUS:', '') === 'true';
+                            if (!window.globalChecklistAdminStatusMap[log.client_id]) window.globalChecklistAdminStatusMap[log.client_id] = {};
+                            if (!window.globalChecklistAdminStatusMap[log.client_id][mapKey]) window.globalChecklistAdminStatusMap[log.client_id][mapKey] = {};
+                            if (window.globalChecklistAdminStatusMap[log.client_id][mapKey][doc] === undefined) {
+                                window.globalChecklistAdminStatusMap[log.client_id][mapKey][doc] = adminStatus;
+                            }
+                            if (year === 'FY_2025_26') {
+                                if (!window.globalChecklistAdminStatusMap[log.client_id][cat]) window.globalChecklistAdminStatusMap[log.client_id][cat] = {};
+                                if (window.globalChecklistAdminStatusMap[log.client_id][cat][doc] === undefined) {
+                                    window.globalChecklistAdminStatusMap[log.client_id][cat][doc] = adminStatus;
+                                }
+                            }
+                        }
+                        if (adminUserPart) {
+                            const adminUserId = adminUserPart.replace('ADMIN_USER_ID:', '').trim();
+                            if (adminUserId) {
+                                if (!window.globalChecklistAdminUsersMap[log.client_id]) window.globalChecklistAdminUsersMap[log.client_id] = {};
+                                if (!window.globalChecklistAdminUsersMap[log.client_id][mapKey]) window.globalChecklistAdminUsersMap[log.client_id][mapKey] = {};
+                                if (window.globalChecklistAdminUsersMap[log.client_id][mapKey][doc] === undefined) {
+                                    window.globalChecklistAdminUsersMap[log.client_id][mapKey][doc] = adminUserId;
+                                }
+                                if (year === 'FY_2025_26') {
+                                    if (!window.globalChecklistAdminUsersMap[log.client_id][cat]) window.globalChecklistAdminUsersMap[log.client_id][cat] = {};
+                                    if (window.globalChecklistAdminUsersMap[log.client_id][cat][doc] === undefined) {
+                                        window.globalChecklistAdminUsersMap[log.client_id][cat][doc] = adminUserId;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        } catch (e) {
+            console.error("Error loading client audit checklist logs:", e);
+        }
+        
+        // 4. Update the Select dropdown for Audit Types
+        const typeSelect = document.getElementById('auditChecklistTypeSelect');
+        if (typeSelect && window.globalSubsidyCategoriesCache) {
+            typeSelect.innerHTML = '<option value="">-- Select Audit Type --</option>';
+            const availableOptions = [];
+            window.globalSubsidyCategoriesCache.forEach(cat => {
+                if (cat.toUpperCase().startsWith('AUDIT_')) {
+                    const displayName = cat.substring(6);
+                    typeSelect.innerHTML += `<option value="${displayName}">${displayName}</option>`;
+                    availableOptions.push(displayName);
+                }
+            });
+            
+            let autoSelected = false;
+            const selectedYear = document.getElementById('auditYearFilter')?.value || 'FY_2025_26';
+            if (window.globalChecklistStatusMap && window.globalChecklistStatusMap[client.client_id]) {
+                const types = Object.keys(window.globalChecklistStatusMap[client.client_id]).filter(k => {
+                    const rawType = (k.includes('|') ? k.split('|')[0] : k).replace(/^AUDIT_/i, '').trim();
+                    const matchesAuditType = availableOptions.some(opt => opt.toLowerCase() === rawType.toLowerCase());
+                    const matchesYear = k.includes('|') ? k.endsWith(`|${selectedYear}`) : (selectedYear === 'FY_2025_26');
+                    return matchesAuditType && matchesYear;
+                });
+                if (types.length > 0) {
+                    const firstTypeKey = types[0];
+                    const rawType = (firstTypeKey.includes('|') ? firstTypeKey.split('|')[0] : firstTypeKey).replace(/^AUDIT_/i, '').trim();
+                    
+                    const matchedOpt = availableOptions.find(opt => opt.toLowerCase() === rawType.toLowerCase());
+                    if (matchedOpt) {
+                        typeSelect.value = matchedOpt;
+                        autoSelected = true;
+                    }
+                }
+            }
+
+            // Fallback: If no previous checklist state map exists yet, auto-select based on client's enrolled services
+            if (!autoSelected && client.standard_services) {
+                const enrolled = client.standard_services.split(',').map(s => s.trim());
+                for (const enc of enrolled) {
+                    const matchedOpt = availableOptions.find(opt => opt.toLowerCase() === enc.toLowerCase() || enc.toLowerCase().includes(opt.toLowerCase()) || opt.toLowerCase().includes(enc.toLowerCase()));
+                    if (matchedOpt) {
+                        typeSelect.value = matchedOpt;
+                        autoSelected = true;
+                        break;
+                    }
+                }
+            }
+
+            if (autoSelected) {
+                loadSelectedAuditChecklist();
+            } else {
+                document.getElementById('auditChecklistContainer').innerHTML = '<div class="text-center py-10 text-gray-400 text-sm font-bold bg-gray-50 rounded-2xl border border-dashed border-gray-200">Please select an Audit Type above to load the checklist.</div>';
+                document.getElementById('auditChecklistProgress').innerText = '0/0 Completed';
+            }
+        }
+
+        // 5. Open Modal
         document.getElementById('auditDrawerOverlay').classList.remove('hidden');
 
-        const tl = document.getElementById('drawerHistoryTimeline'); 
-        tl.innerHTML = '<div class="text-sm text-gray-400">Loading history...</div>';
-        
-        // Fetch strictly client-level logs
-        const { data: logs } = await supabaseClient.from('task_logs').select('*, users(name)').eq('client_id', client.client_id).is('task_id', null).order('timestamp', { ascending: false });
-        tl.innerHTML = '';
+        // Fetch all client-level logs (including followup, checklist updates, and billing)
+        const { data: logs } = await fetchAllRows((from, to) => supabaseClient
+            .from('task_logs')
+            .select('*, users(name)')
+            .eq('client_id', client.client_id)
+            .is('task_id', null)
+            .order('timestamp', { ascending: false })
+            .order('log_id', { ascending: false })
+            .range(from, to));
+
+        window.currentWorkHistoryLogs = logs || [];
 
         // Find latest follow-up date
         const followupLog = logs ? logs.find(log => log.note && log.note.includes('[AUDIT_FOLLOWUP]')) : null;
@@ -391,25 +945,214 @@
                 document.getElementById('drawFollowupDate').value = match[1];
             }
         }
-        
-        // Show ONLY logs that were created by the Audit Status page
-        // These logs will have non-null values for the audit status columns (even if they are empty strings)
-        const auditLogs = logs ? logs.filter(log => {
-            return log.bank_status !== null || log.sales_status !== null || log.ledger_status !== null || log.others_status !== null;
-        }) : [];
-        
-        if (auditLogs.length > 0) {
-            auditLogs.forEach(log => {
-                const d = new Date(log.timestamp).toLocaleDateString('en-IN', {day:'2-digit', month:'short', year:'numeric'});
-                const t = new Date(log.timestamp).toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'});
-                let gridHtml = '';
-                if(log.bank_status || log.sales_status || log.ledger_status || log.others_status) {
-                    gridHtml = `<div class="grid grid-cols-1 md:grid-cols-4 gap-4 bg-gray-50 border border-gray-100 rounded-lg p-4 mt-3"><div><span class="font-bold text-gray-800 block text-xs uppercase mb-1">Bank:</span><span class="text-sm text-gray-700">${log.bank_status || '-'}</span></div><div><span class="font-bold text-gray-800 block text-xs uppercase mb-1">Sales:</span><span class="text-sm text-gray-700">${log.sales_status || '-'}</span></div><div><span class="font-bold text-gray-800 block text-xs uppercase mb-1">Cash & Credit:</span><span class="text-sm text-gray-700">${log.ledger_status || '-'}</span></div><div><span class="font-bold text-gray-800 block text-xs uppercase mb-1">Others:</span><span class="text-sm text-gray-700">${log.others_status || '-'}</span></div></div>`;
+
+        window.currentWorkHistoryFilter = 'all';
+        renderAuditWorkHistory('all');
+    }
+
+    function setWorkHistoryFilter(category) {
+        window.currentWorkHistoryFilter = category;
+        renderAuditWorkHistory(category);
+    }
+
+    function renderAuditWorkHistory(filterCategory = 'all') {
+        const tl = document.getElementById('drawerHistoryTimeline');
+        if (!tl) return;
+
+        // Update tab buttons state
+        ['all', 'status', 'checklist', 'billing'].forEach(cat => {
+            const btn = document.getElementById(`btnHistFilter-${cat}`);
+            if (btn) {
+                if (cat === filterCategory) {
+                    btn.className = 'px-2.5 py-1 rounded-lg transition bg-white text-indigo-700 shadow-sm border border-slate-200/80 font-black';
+                } else {
+                    btn.className = 'px-2.5 py-1 rounded-lg transition text-slate-500 font-bold hover:text-slate-800 hover:bg-slate-200/50';
                 }
-                const mainNote = log.note !== 'Status Updated' && log.note !== 'Historical Update' ? `<p class="text-sm text-gray-800 mb-2 px-1">${log.note}</p>` : '';
-                tl.innerHTML += `<div class="bg-white rounded-xl border border-gray-200 mb-4 shadow-sm overflow-hidden border-l-4 border-l-gray-300"><div class="px-5 py-3 border-b border-gray-100 flex items-center gap-2"><span class="text-xs text-gray-500">${d} ${t}</span><span class="text-gray-300">•</span><span class="text-sm font-bold text-blue-600 uppercase tracking-wide">${log.users?.name || 'System'}</span></div><div class="p-5">${mainNote}${gridHtml}</div></div>`;
-            });
-        } else { tl.innerHTML = '<div class="text-sm text-gray-400 py-2">No history notes yet.</div>'; }
+            }
+        });
+
+        const logs = window.currentWorkHistoryLogs || [];
+        if (!logs || logs.length === 0) {
+            tl.innerHTML = '<div class="text-center py-8 text-slate-400 text-xs font-bold bg-slate-50 rounded-2xl border border-dashed border-slate-200">No work history recorded yet.</div>';
+            return;
+        }
+
+        // Classify logs
+        const categorizedLogs = logs.map(log => {
+            let cat = 'status';
+            const note = log.note || '';
+            if (note.includes('[AUDIT_CHECKLIST_STATUS]')) {
+                cat = 'checklist';
+            } else if (note.includes('[BILL_GENERATED]')) {
+                cat = 'billing';
+            } else if (log.bank_status !== null || log.sales_status !== null || log.ledger_status !== null || log.others_status !== null || note.includes('[AUDIT_FOLLOWUP]')) {
+                cat = 'status';
+            }
+            return { log, category: cat };
+        });
+
+        const filtered = categorizedLogs.filter(item => {
+            if (filterCategory === 'all') return true;
+            return item.category === filterCategory;
+        });
+
+        if (filtered.length === 0) {
+            tl.innerHTML = `<div class="text-center py-8 text-slate-400 text-xs font-bold bg-slate-50 rounded-2xl border border-dashed border-slate-200">No history found for filter: <span class="capitalize font-black text-slate-600">${filterCategory}</span></div>`;
+            return;
+        }
+
+        let html = '';
+        filtered.forEach(({ log, category }) => {
+            const d = new Date(log.timestamp).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+            const t = new Date(log.timestamp).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+            
+            // Resolve user name and initial
+            let userName = log.users?.name;
+            if (!userName && window.globalTeamMembers) {
+                const u = window.globalTeamMembers.find(mem => mem.id === log.user_id);
+                if (u) userName = u.name;
+            }
+            if (!userName) userName = 'System';
+            const initial = userName.charAt(0).toUpperCase();
+
+            if (category === 'checklist') {
+                const cleanNote = log.note.replace('[AUDIT_CHECKLIST_STATUS] ', '');
+                const parts = cleanNote.split('|');
+                const typePart = parts.find(p => p.startsWith('TYPE:'));
+                const stagePart = parts.find(p => p.startsWith('STAGE:'));
+                const statusPart = parts.find(p => p.startsWith('STATUS:'));
+                const remarkPart = parts.find(p => p.startsWith('REMARK:'));
+                const yearPart = parts.find(p => p.startsWith('YEAR:'));
+                const adminStatusPart = parts.find(p => p.startsWith('ADMIN_STATUS:'));
+                const adminUserPart = parts.find(p => p.startsWith('ADMIN_USER_ID:'));
+
+                const type = typePart ? typePart.replace('TYPE:', '') : '';
+                const stage = stagePart ? stagePart.replace('STAGE:', '') : 'Stage Update';
+                const isDone = statusPart ? statusPart.replace('STATUS:', '') === 'true' : false;
+                const remark = remarkPart ? remarkPart.replace('REMARK:', '') : '';
+                const year = yearPart ? yearPart.replace('YEAR:', '') : 'FY_2025_26';
+                const isAdminDone = adminStatusPart ? adminStatusPart.replace('ADMIN_STATUS:', '') === 'true' : false;
+                const adminUserId = adminUserPart ? adminUserPart.replace('ADMIN_USER_ID:', '').trim() : '';
+
+                let adminVerifierName = '';
+                if (adminUserId && window.globalTeamMembers) {
+                    const u = window.globalTeamMembers.find(m => m.id === adminUserId);
+                    if (u) adminVerifierName = u.name;
+                }
+
+                const statusBadge = isDone 
+                    ? `<span class="bg-emerald-50 text-emerald-700 text-[10px] font-black uppercase px-2 py-0.5 rounded-md border border-emerald-100 flex items-center gap-1"><i class="fa-solid fa-circle-check text-emerald-500"></i> Checked</span>`
+                    : `<span class="bg-slate-100 text-slate-600 text-[10px] font-black uppercase px-2 py-0.5 rounded-md border border-slate-200 flex items-center gap-1"><i class="fa-regular fa-circle text-slate-400"></i> Unchecked</span>`;
+
+                const adminBadge = isAdminDone 
+                    ? `<span class="bg-purple-50 text-purple-700 text-[10px] font-black uppercase px-2 py-0.5 rounded-md border border-purple-100 flex items-center gap-1" title="Verified by ${adminVerifierName || 'Admin'}"><i class="fa-solid fa-user-shield text-purple-600"></i> Admin Approved</span>`
+                    : '';
+
+                const remarkBox = remark 
+                    ? `<div class="mt-2 bg-slate-50/80 border border-slate-200/80 rounded-xl p-2.5 text-xs text-slate-700 font-medium flex items-start gap-2"><i class="fa-regular fa-comment-dots text-slate-400 mt-0.5 shrink-0"></i><span class="break-words">${remark}</span></div>` 
+                    : '';
+
+                html += `
+                <div class="bg-white rounded-2xl border border-slate-200/80 p-4 shadow-xs hover:shadow-md transition-all border-l-4 border-l-indigo-500">
+                    <div class="flex items-center justify-between gap-2 border-b border-slate-100 pb-2.5 mb-2.5">
+                        <div class="flex items-center gap-2">
+                            <div class="h-6 w-6 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 text-white font-black text-[10px] flex items-center justify-center shadow-xs shrink-0">${initial}</div>
+                            <span class="text-xs font-black text-slate-800 uppercase tracking-wide">${userName}</span>
+                            <span class="bg-indigo-50 text-indigo-700 text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded tracking-wider border border-indigo-100">Checklist</span>
+                        </div>
+                        <span class="text-[10px] font-bold text-slate-400 shrink-0">${d} • ${t}</span>
+                    </div>
+                    <div class="space-y-1.5">
+                        <div class="flex items-center justify-between flex-wrap gap-1.5">
+                            <div class="text-xs font-black text-slate-900 flex items-center gap-1.5">
+                                <span class="text-indigo-600">${type ? `${type}:` : ''}</span>
+                                <span>${stage}</span>
+                            </div>
+                            <div class="flex items-center gap-1.5">${statusBadge}${adminBadge}</div>
+                        </div>
+                        ${remarkBox}
+                    </div>
+                </div>`;
+
+            } else if (category === 'billing') {
+                const match = log.note.match(/\[BILL_GENERATED\] Service: (.*?) \| Bill No: (.*?) \| Amount: (.*?)$/);
+                const serviceName = match ? match[1] : 'Audit Service';
+                const billNo = match ? match[2] : '-';
+                const amount = match ? match[3] : '0';
+
+                html += `
+                <div class="bg-white rounded-2xl border border-slate-200/80 p-4 shadow-xs hover:shadow-md transition-all border-l-4 border-l-blue-500">
+                    <div class="flex items-center justify-between gap-2 border-b border-slate-100 pb-2.5 mb-2.5">
+                        <div class="flex items-center gap-2">
+                            <div class="h-6 w-6 rounded-full bg-blue-600 text-white font-black text-[10px] flex items-center justify-center shadow-xs shrink-0">${initial}</div>
+                            <span class="text-xs font-black text-slate-800 uppercase tracking-wide">${userName}</span>
+                            <span class="bg-blue-50 text-blue-700 text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded tracking-wider border border-blue-100">Billing</span>
+                        </div>
+                        <span class="text-[10px] font-bold text-slate-400 shrink-0">${d} • ${t}</span>
+                    </div>
+                    <div class="flex items-center gap-3 bg-blue-50/60 border border-blue-100 rounded-xl p-3">
+                        <div class="w-8 h-8 rounded-xl bg-blue-500 text-white flex items-center justify-center shadow-xs shrink-0"><i class="fa-solid fa-file-invoice-dollar text-sm"></i></div>
+                        <div class="flex-1 min-w-0">
+                            <div class="text-[10px] font-black text-blue-800 uppercase tracking-wider">Invoice Generated</div>
+                            <div class="text-xs text-slate-600 font-bold truncate">Service: ${serviceName} • Bill: #${billNo}</div>
+                        </div>
+                        <div class="bg-emerald-50 text-emerald-700 border border-emerald-200 px-2.5 py-1 rounded-lg text-xs font-black shrink-0">₹${amount}</div>
+                    </div>
+                </div>`;
+
+            } else {
+                // Status / Followup note
+                let cleanNote = log.note || '';
+                let followupDatePill = '';
+
+                if (cleanNote.includes('[AUDIT_FOLLOWUP]')) {
+                    const matchDate = cleanNote.match(/\[AUDIT_FOLLOWUP\] Date: (.*?)(?:\s*\||$)/);
+                    const matchNote = cleanNote.match(/Note:\s*(.*?)(?:\s*\||$)/);
+                    if (matchDate) {
+                        followupDatePill = `<span class="bg-pink-50 text-pink-700 text-[10px] font-black uppercase px-2 py-0.5 rounded-md border border-pink-100 inline-flex items-center gap-1.5"><i class="fa-regular fa-calendar-days"></i> Next Follow-up: ${matchDate[1]}</span>`;
+                    }
+                    if (matchNote) {
+                        cleanNote = matchNote[1];
+                    } else {
+                        cleanNote = cleanNote.replace(/\[AUDIT_FOLLOWUP\] Date: .*?(?:\s*\||$)/, '').trim();
+                    }
+                }
+
+                let gridHtml = '';
+                if (log.bank_status || log.sales_status || log.ledger_status || log.others_status) {
+                    gridHtml = `
+                    <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3 p-3 bg-slate-50/80 border border-slate-200/60 rounded-xl text-xs">
+                        <div><span class="font-extrabold text-slate-400 block text-[9px] uppercase tracking-wider mb-0.5">Bank</span><span class="text-xs font-bold text-slate-800">${log.bank_status || '-'}</span></div>
+                        <div><span class="font-extrabold text-slate-400 block text-[9px] uppercase tracking-wider mb-0.5">Sales/Pur.</span><span class="text-xs font-bold text-slate-800">${log.sales_status || '-'}</span></div>
+                        <div><span class="font-extrabold text-slate-400 block text-[9px] uppercase tracking-wider mb-0.5">Cash & Credit</span><span class="text-xs font-bold text-slate-800">${log.ledger_status || '-'}</span></div>
+                        <div><span class="font-extrabold text-slate-400 block text-[9px] uppercase tracking-wider mb-0.5">Others</span><span class="text-xs font-bold text-slate-800">${log.others_status || '-'}</span></div>
+                    </div>`;
+                }
+
+                const displayNote = (cleanNote && cleanNote !== 'Status Updated' && cleanNote !== 'Historical Update') 
+                    ? `<p class="text-xs font-medium text-slate-700 leading-relaxed">${cleanNote}</p>` 
+                    : '';
+
+                html += `
+                <div class="bg-white rounded-2xl border border-slate-200/80 p-4 shadow-xs hover:shadow-md transition-all border-l-4 border-l-emerald-500">
+                    <div class="flex items-center justify-between gap-2 border-b border-slate-100 pb-2.5 mb-2.5">
+                        <div class="flex items-center gap-2">
+                            <div class="h-6 w-6 rounded-full bg-emerald-600 text-white font-black text-[10px] flex items-center justify-center shadow-xs shrink-0">${initial}</div>
+                            <span class="text-xs font-black text-slate-800 uppercase tracking-wide">${userName}</span>
+                            <span class="bg-emerald-50 text-emerald-700 text-[9px] font-extrabold uppercase px-1.5 py-0.5 rounded tracking-wider border border-emerald-100">Status Update</span>
+                        </div>
+                        <span class="text-[10px] font-bold text-slate-400 shrink-0">${d} • ${t}</span>
+                    </div>
+                    <div class="space-y-1.5">
+                        ${followupDatePill ? `<div class="mb-1">${followupDatePill}</div>` : ''}
+                        ${displayNote}
+                        ${gridHtml}
+                    </div>
+                </div>`;
+            }
+        });
+
+        tl.innerHTML = html;
     }
 
     function closeAuditDrawer() { 
@@ -429,25 +1172,69 @@
         const transferTo = document.getElementById('drawTransferUser') ? document.getElementById('drawTransferUser').value : '';
 
         const isOverdue = currentActiveClient.followup_date ? (new Date(currentActiveClient.followup_date) < new Date().setHours(0,0,0,0)) : false;
+        const hasNoFollowup = !currentActiveClient.followup_date;
         const origFollowupDate = currentActiveClient.followup_date || '';
         const isDateChanged = origFollowupDate !== followupDate;
 
-        if (isOverdue && newStatus !== 'Completed') {
-            const hasComment = newNote.length > 0;
-            const hasDateChanged = isDateChanged;
-            if (!hasComment && !hasDateChanged) {
-                alert("This audit follow-up is overdue. You must write a comment or update the follow-up date to save.");
+        // 1. Mandatory follow-up date check if overdue or no follow-up date
+        if ((isOverdue || hasNoFollowup) && newStatus !== 'Completed') {
+            if (!followupDate) {
+                showToast("A follow-up date is mandatory because there is currently no follow-up date set or the previous one has passed.");
                 btn.innerHTML = 'Save Update';
                 return;
             }
         }
 
-        // 1. Update the actual Client record
+        // Prevent past follow-up date selection
+        if (followupDate) {
+            const selectedDate = new Date(followupDate);
+            selectedDate.setHours(0,0,0,0);
+            const today = new Date();
+            today.setHours(0,0,0,0);
+            if (selectedDate < today) {
+                showToast("The new follow-up date cannot be in the past.");
+                btn.innerHTML = 'Save Update';
+                return;
+            }
+        }
+
+        // 2. Mandatory workflow assignment check if no one is assigned yet
+        const allowedServices = window.globalAuditAllowedServices || [];
+        const existingAssignment = (window.globalAssignmentsList || []).find(a => 
+            a.client_id === currentActiveClient.client_id && 
+            (
+                a.service_type === 'Audit Status' || 
+                (a.service_type && a.service_type.toLowerCase().includes('audit')) ||
+                (allowedServices.some(as => a.service_type && a.service_type.toLowerCase() === as.toLowerCase()))
+            )
+        );
+        const isAssigned = existingAssignment && existingAssignment.maker_id;
+
+        if (!isAssigned && !transferTo) {
+            showToast("No team member is assigned to this audit workflow yet. You must select a user in 'Transfer Audit Workflow To' to assign them.");
+            btn.innerHTML = 'Save Update';
+            return;
+        }
+
+        if (isOverdue && newStatus !== 'Completed') {
+            const hasComment = newNote.length > 0;
+            const hasDateChanged = isDateChanged;
+            if (!hasComment && !hasDateChanged) {
+                showToast("This audit follow-up is overdue. You must write a comment or update the follow-up date to save.");
+                btn.innerHTML = 'Save Update';
+                return;
+            }
+        }
+
+        // 1. Update the actual Client record if it is the default financial year (FY 2025-26)
+        const selectedYear = document.getElementById('auditYearFilter')?.value || 'FY_2025_26';
         const updates = { audit_status: newStatus, audit_bank: b, audit_sales: s, audit_ledger: l, audit_others: o };
-        await supabaseClient.from('clients').update(updates).eq('client_id', currentActiveClient.client_id);
+        if (selectedYear === 'FY_2025_26') {
+            await supabaseClient.from('clients').update(updates).eq('client_id', currentActiveClient.client_id);
+        }
         
         // 2. Insert into the client's history log
-        let logNote = newNote || `Audit status updated to ${newStatus}`;
+        let logNote = newNote || `Audit status for ${selectedYear.replace('_', ' ')} updated to ${newStatus}`;
         if (isDateChanged) {
             const dateLogStr = `Follow-up date updated from ${origFollowupDate || 'None'} to ${followupDate || 'None'}`;
             logNote = newNote ? `${newNote} | ${dateLogStr}` : dateLogStr;
@@ -456,16 +1243,33 @@
             logNote = `[AUDIT_FOLLOWUP] Date: ${followupDate} | Note: ${logNote}`;
         }
 
-        await supabaseClient.from('task_logs').insert([{ 
-            client_id: currentActiveClient.client_id, 
-            user_id: currentUser.id, 
-            note: logNote, 
-            bank_status: b, 
-            sales_status: s, 
-            ledger_status: l, 
-            others_status: o,
-            timestamp: new Date().toISOString()
-        }]);
+        // If completed, ensure follow-up date is cleared to prevent overdue alerts
+        if (newStatus === 'Completed') {
+            logNote = `[AUDIT_FOLLOWUP] Date: None | Note: Audit status for ${selectedYear.replace('_', ' ')} completed`;
+        }
+
+        // 3. Create year-specific tracking log
+        // Format: [AUDIT_TRACKING] client_id|period|status|bank|sales|ledger|others
+        const trackingNote = `[AUDIT_TRACKING] ${currentActiveClient.client_id}|${selectedYear}|${newStatus}|${b || 'null'}|${s || 'null'}|${l || 'null'}|${o || 'null'}`;
+
+        await Promise.all([
+            supabaseClient.from('task_logs').insert([{ 
+                client_id: currentActiveClient.client_id, 
+                user_id: currentUser.id, 
+                note: trackingNote,
+                timestamp: new Date().toISOString()
+            }]),
+            supabaseClient.from('task_logs').insert([{ 
+                client_id: currentActiveClient.client_id, 
+                user_id: currentUser.id, 
+                note: logNote, 
+                bank_status: b, 
+                sales_status: s, 
+                ledger_status: l, 
+                others_status: o,
+                timestamp: new Date().toISOString()
+            }])
+        ]);
 
         if (transferTo) {
             // Delete any existing audit-related assignments for this client to prevent duplicates
@@ -496,11 +1300,27 @@
         btn.innerHTML = 'Save Update';
 
         if (newStatus === 'Completed' && currentActiveClient.audit_status !== 'Completed') {
-            const auditService = globalServicesList.find(s => s.service_type === 'Audit Status');
+            let auditServiceName = 'Audit Status';
+            const auditServiceNames = window.globalAuditAllowedServices || (globalServicesList || []).filter(s => s.is_audit).map(s => s.service_type);
+            const enrolled = currentActiveClient.standard_services ? currentActiveClient.standard_services.split(',').map(s => s.trim()) : [];
+            const activeServices = enrolled.map(s => {
+                return auditServiceNames.find(asn => asn.toLowerCase() === s.toLowerCase());
+            }).filter(Boolean);
+            
+            if (activeServices.length > 0) {
+                auditServiceName = activeServices[0];
+            } else {
+                const selectedFilterService = document.getElementById('auditServiceFilter')?.value;
+                if (selectedFilterService) {
+                    auditServiceName = selectedFilterService;
+                }
+            }
+
+            const auditService = (globalServicesList || []).find(s => s.service_type === auditServiceName) || (globalServicesList || []).find(s => s.service_type === 'Audit Status');
             const mockTask = {
                 client_id: currentActiveClient.client_id,
                 clients: { display_name: currentActiveClient.display_name },
-                custom_task_name: 'Audit Status',
+                custom_task_name: `${auditServiceName} - ${selectedYear.replace('_', ' ')}`,
                 estimated_fee: auditService ? auditService.standard_fee : 0
             };
             openAutoInvoiceModal(mockTask);
@@ -517,11 +1337,8 @@
         const container = document.getElementById('custom-task-list-container');
         container.innerHTML = '<div class="text-center p-8 text-gray-500"><i class="fa-solid fa-spinner fa-spin text-2xl mb-2"></i><br>Loading tasks...</div>';
         
-        const { data } = await supabaseClient.from('tasks').select(`*, clients(client_id, display_name)`).eq('is_custom', true).neq('status', 'Completed').eq('assigned_to', currentUser.id).order('due_date', { ascending: true });
+        const { data } = await supabaseClient.from('tasks').select(`*, clients(client_id, display_name)`).eq('is_custom', true).order('due_date', { ascending: true });
         
-        container.innerHTML = '';
-        if(!data || data.length === 0) return container.innerHTML = '<div class="text-center p-12 text-gray-500 border border-dashed rounded-xl bg-white"><i class="fa-solid fa-clipboard-check text-4xl text-gray-300 mb-3"></i><br>No active custom tasks found.</div>';
-
         const todayStart = new Date();
         todayStart.setHours(0,0,0,0);
         const { data: ackLogs } = await supabaseClient.from('task_logs')
@@ -537,9 +1354,76 @@
             });
         }
 
-        data.forEach((task) => {
+        globalCustomTasksList = data || [];
+        globalCustomTasksAckMap = ackMap;
+
+        filterCustomTasks();
+    }
+
+    window.filterCustomTasks = function(searchQuery) {
+        const filterVal = document.getElementById('customTasksFilterSelect')?.value || 'all';
+        if (filterVal !== 'my') window.customTasksDueFilterStatus = 'all';
+        const container = document.getElementById('custom-task-list-container');
+        if (!container) return;
+
+        let filtered = globalCustomTasksList;
+        if (filterVal === 'all') {
+            filtered = globalCustomTasksList.filter(task => task.status !== 'Completed' && task.status !== 'Cancelled');
+        } else if (filterVal === 'my') {
+            filtered = globalCustomTasksList.filter(task => task.status !== 'Completed' && task.status !== 'Cancelled' && task.assigned_to === currentUser.id);
+        } else if (filterVal === 'completed') {
+            filtered = globalCustomTasksList.filter(task => task.status === 'Completed' || task.status === 'Cancelled');
+        }
+
+        if (window.customTasksDueFilterStatus === 'due') {
+            filtered = filtered.filter(task => {
+                if (task.status === 'Completed' || task.status === 'Cancelled') return false;
+                const isWaitingOnClient = task.status.toLowerCase().includes('client') || task.status.toLowerCase().includes('hold');
+                if (isWaitingOnClient) return false;
+                let isOverdue = false;
+                if (task.due_date) {
+                    const dDate = new Date(task.due_date); dDate.setHours(0,0,0,0);
+                    const today = new Date(); today.setHours(0,0,0,0);
+                    if (dDate < today) isOverdue = true;
+                }
+                return !isOverdue;
+            });
+        } else if (window.customTasksDueFilterStatus === 'overdue') {
+            filtered = filtered.filter(task => {
+                if (task.status === 'Completed' || task.status === 'Cancelled') return false;
+                const isWaitingOnClient = task.status.toLowerCase().includes('client') || task.status.toLowerCase().includes('hold');
+                if (isWaitingOnClient) return false;
+                let isOverdue = false;
+                if (task.due_date) {
+                    const dDate = new Date(task.due_date); dDate.setHours(0,0,0,0);
+                    const today = new Date(); today.setHours(0,0,0,0);
+                    if (dDate < today) isOverdue = true;
+                }
+                return isOverdue;
+            });
+        }
+
+        const query = (searchQuery !== undefined ? searchQuery : (document.getElementById('headerSearchInput')?.value || '')).trim().toLowerCase();
+        if (query) {
+            filtered = filtered.filter(task => {
+                const clientName = (task.clients?.display_name || '').toLowerCase();
+                const taskName = (task.custom_task_name || '').toLowerCase();
+                return clientName.includes(query) || taskName.includes(query);
+            });
+        }
+
+        container.innerHTML = '';
+        if(!filtered || filtered.length === 0) {
+            const noMsg = filterVal === 'completed' ? 'No completed custom tasks found.' : 'No active custom tasks found.';
+            return container.innerHTML = `<div class="text-center p-12 text-gray-500 border border-dashed rounded-xl bg-white"><i class="fa-solid fa-clipboard-check text-4xl text-gray-300 mb-3"></i><br>${noMsg}</div>`;
+        }
+
+        filtered.forEach((task) => {
             const clientName = task.clients?.display_name || 'Unknown Client';
             const assignee = globalTeamMembers.find(u => u.id === task.assigned_to)?.name || 'Unassigned';
+            
+            const isCancelled = task.is_custom && task.custom_task_name && task.custom_task_name.endsWith(' [Cancelled]');
+            const cleanTaskName = task.is_custom ? task.custom_task_name.replace(/ \[Cancelled\]$/, '') : '';
             
             let isOverdue = false;
             let dateColor = "bg-gray-100 text-gray-600";
@@ -556,11 +1440,20 @@
                 dateText = dDate.toLocaleDateString('en-IN', {day:'numeric', month:'short', year:'numeric'});
             }
 
-            const statusColor = task.status === 'Pending' ? 'bg-gray-100 text-gray-600' : 'bg-indigo-100 text-indigo-700';
+            let statusColor = 'bg-indigo-100 text-indigo-700';
+            let displayStatus = task.status;
+            if (task.status === 'Pending') {
+                statusColor = 'bg-gray-100 text-gray-600';
+            } else if (isCancelled) {
+                statusColor = 'bg-rose-50 text-rose-700 border border-rose-100';
+                displayStatus = 'Cancelled';
+            } else if (task.status === 'Completed') {
+                statusColor = 'bg-emerald-50 text-emerald-700 border border-emerald-100';
+            }
 
-            const isAcked = !!ackMap[task.task_id];
+            const isAcked = !!globalCustomTasksAckMap[task.task_id];
             let ackCheckboxHtml = '';
-            if (!isOverdue) {
+            if (!isOverdue && !isCancelled) {
                 if (isAcked) {
                     ackCheckboxHtml = `
                         <div onclick="event.stopPropagation()" class="flex items-center gap-1.5 text-xs text-emerald-600 bg-emerald-50 px-2.5 py-1.5 rounded-xl border border-emerald-100 font-black uppercase tracking-wider">
@@ -577,18 +1470,22 @@
                 }
             }
 
+            const titleClass = isCancelled ? 'font-bold text-gray-400 text-lg line-through' : 'font-bold text-gray-900 text-lg';
+            const borderLeftColor = isCancelled ? 'border-l-gray-400' : 'border-l-indigo-500';
+            const cardBg = isCancelled ? 'bg-gray-50/80 opacity-75' : 'bg-white';
+
             // Uses the same openTaskDrawer as the generic Task Board!
             container.innerHTML += `
-            <div onclick='openTaskDrawer(${JSON.stringify(task).replace(/'/g, "&#39;")})' class="bg-white rounded-xl shadow-sm border border-gray-200 border-l-4 border-l-indigo-500 p-5 cursor-pointer hover:shadow-md hover:border-indigo-300 transition flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+            <div onclick='openTaskDrawer(${JSON.stringify(task).replace(/'/g, "&#39;")})' class="${cardBg} rounded-xl shadow-sm border border-gray-200 border-l-4 ${borderLeftColor} p-5 cursor-pointer hover:shadow-md hover:border-indigo-300 transition flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                 <div class="flex-1">
                     <span class="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-1 hover:text-blue-600 hover:underline cursor-pointer w-max" onclick="event.stopPropagation(); openUniversalClientProfile('${task.client_id}')">${clientName}</span>
-                    <h4 class="font-bold text-gray-900 text-lg">${task.custom_task_name}</h4>
+                    <h4 class="${titleClass}">${cleanTaskName}</h4>
                 </div>
                 <div class="flex flex-wrap items-center gap-3 text-xs font-bold">
                     ${ackCheckboxHtml}
                     <div class="flex items-center gap-1.5 text-gray-600"><i class="fa-solid fa-user-tie text-gray-400"></i> ${assignee}</div>
                     <div class="px-3 py-1.5 rounded-xl ${dateColor}"><i class="fa-regular fa-clock mr-1"></i> ${dateText}</div>
-                    <div class="px-3 py-1.5 rounded-xl ${statusColor}">${task.status}</div>
+                    <div class="px-3 py-1.5 rounded-xl ${statusColor}">${displayStatus}</div>
                 </div>
             </div>`;
         });
@@ -607,10 +1504,10 @@
             
             if (error) throw error;
             
-            alert("Task acknowledged successfully!");
+            showToast("Task acknowledged successfully!");
             globalRefresh();
         } catch (err) {
-            alert("Error: " + err.message);
+            showToast("Error: " + err.message);
         }
     }
 
@@ -618,19 +1515,84 @@
         if (event) event.stopPropagation();
         
         try {
+            let client = (globalAuditsList || []).find(c => c.client_id === clientId);
+            if (!client) {
+                // Fallback to globalClientsList if audits view is not loaded yet
+                client = (globalClientsList || []).find(c => c.client_id === clientId);
+                if (client) {
+                    // Fetch the latest followup date for this client from supabase task_logs
+                    const { data: followupLogs } = await supabaseClient
+                        .from('task_logs')
+                        .select('note')
+                        .eq('client_id', clientId)
+                        .ilike('note', '%[AUDIT_FOLLOWUP]%')
+                        .order('timestamp', { ascending: false })
+                        .limit(1);
+                    if (followupLogs && followupLogs.length > 0) {
+                        const match = followupLogs[0].note.match(/\[AUDIT_FOLLOWUP\] Date: (.*?)(?:\s*\||$)/);
+                        if (match) {
+                            client.followup_date = match[1];
+                        }
+                    }
+                }
+            }
+            if (!client) throw new Error("Client not found in active list");
+
+            const today = new Date(); today.setHours(0,0,0,0);
+            const existingFollowup = client.followup_date || '';
+            
+            let isOverdue = true;
+            if (existingFollowup) {
+                const parts = existingFollowup.split('-');
+                const fDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+                fDate.setHours(0,0,0,0);
+                isOverdue = fDate < today;
+            }
+
+            let newFollowupDate = '';
+            let noteText = `[Acknowledged Today] Audit acknowledged.`;
+
+            if (isOverdue || !existingFollowup) {
+                const datePromptText = existingFollowup
+                    ? `The follow-up date for "${client.display_name}" is overdue (was: ${new Date(existingFollowup).toLocaleDateString('en-IN')}).\n\nPlease enter a new follow-up date (YYYY-MM-DD) to acknowledge:`
+                    : `There is no follow-up date configured for "${client.display_name}".\n\nPlease enter a follow-up date (YYYY-MM-DD) to acknowledge:`;
+
+                const dateInput = prompt(datePromptText, '');
+                if (dateInput === null) return; // User cancelled
+                if (!dateInput.trim()) {
+                    return showToast('Acknowledgement cancelled. A new follow-up date is mandatory.');
+                }
+                const parsedDate = new Date(dateInput.trim());
+                if (isNaN(parsedDate.getTime())) {
+                    return showToast('Invalid date format. Please use YYYY-MM-DD (e.g., 2026-06-15).');
+                }
+                if (parsedDate < today) {
+                    return showToast('The follow-up date cannot be in the past. Acknowledgement cancelled.');
+                }
+                newFollowupDate = dateInput.trim();
+
+                const remarkInput = prompt(`Please enter a remark (follow-up notes/action plan) for "${client.display_name}":`, '');
+                if (remarkInput === null) return; // User cancelled
+                if (!remarkInput.trim()) {
+                    return showToast('Acknowledgement cancelled. A remark is required when updating the follow-up date.');
+                }
+                noteText = `[AUDIT_FOLLOWUP] Date: ${newFollowupDate} | Note: [Acknowledged Today] ${remarkInput.trim()}`;
+            }
+
+            // Insert log
             const { error } = await supabaseClient.from('task_logs').insert([{
                 client_id: clientId,
                 user_id: currentUser.id,
-                note: `[Acknowledged Today] Audit acknowledged.`,
+                note: noteText,
                 timestamp: new Date().toISOString()
             }]);
             
             if (error) throw error;
             
-            alert("Audit acknowledged successfully!");
+            showToast("Audit acknowledged successfully!");
             globalRefresh();
         } catch (err) {
-            alert("Error: " + err.message);
+            showToast("Error: " + err.message);
         }
     }
 
@@ -653,9 +1615,9 @@
         const dueDate = document.getElementById('ctDueDate').value;
         const fee = document.getElementById('ctFee').value;
 
-        if(!clientName || !taskName) return alert("Client and Task Description are required.");
+        if(!clientName || !taskName) return showToast("Client and Task Description are required.");
         const client = globalClientsList.find(c => c.display_name === clientName);
-        if(!client) return alert("Please select a valid client from the dropdown.");
+        if(!client) return showToast("Please select a valid client from the dropdown.");
 
         const btn = document.getElementById('saveCtBtn'); const originalText = btn.innerHTML; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving...';
 
@@ -665,7 +1627,7 @@
             }]);
             if (error) throw error;
             closeCreateCustomTaskModal(); globalRefresh();
-        } catch(err) { alert("Database Error: " + err.message); btn.innerHTML = originalText; }
+        } catch(err) { showToast("Database Error: " + err.message); btn.innerHTML = originalText; }
     }
 
     // NEW: Universal drawer for both specific Custom Tasks AND specific Compliance Tasks
@@ -676,9 +1638,22 @@
         document.getElementById('ctDrawerClientName').innerText = task.clients?.display_name || 'Client';
         document.getElementById('ctDrawerClientName').onclick = () => { openUniversalClientProfile(task.client_id); };
         
-        const taskName = task.is_custom ? task.custom_task_name : (task.services?.service_type || 'Compliance Task');
+        const isCancelled = task.is_custom && task.custom_task_name && task.custom_task_name.endsWith(' [Cancelled]');
+        const rawTaskName = task.is_custom ? task.custom_task_name : (task.services?.service_type || 'Compliance Task');
+        const taskName = rawTaskName.replace(/ \[Cancelled\]$/, '');
         document.getElementById('ctDrawerTaskName').innerText = taskName;
-        document.getElementById('ctDrawStatus').value = task.status;
+        
+        const statusSelect = document.getElementById('ctDrawStatus');
+        statusSelect.innerHTML = `
+            <option value="Pending">Pending</option>
+            <option value="In Progress">In Progress</option>
+            <option value="Review">Under Review</option>
+            <option value="Completed">Completed</option>
+        `;
+        if (task.is_custom) {
+            statusSelect.innerHTML += `<option value="Cancelled">Cancelled</option>`;
+        }
+        statusSelect.value = isCancelled ? 'Cancelled' : task.status;
         
         const userSelect = document.getElementById('ctDrawAssignee');
         userSelect.innerHTML = '<option value="">-- Unassigned --</option>';
@@ -688,6 +1663,27 @@
         document.getElementById('ctDrawDueDate').value = task.due_date || '';
         document.getElementById('ctDrawFee').value = task.estimated_fee || 0;
         document.getElementById('ctDrawNote').value = ''; 
+
+        const deleteContainer = document.getElementById('ctDrawerDeleteContainer');
+        if (deleteContainer) {
+            if (task.is_custom) {
+                if (isCancelled) {
+                    deleteContainer.innerHTML = `
+                        <button onclick="restoreTaskFromDrawer()" id="deleteCtBtn" class="w-full border border-emerald-200 hover:bg-emerald-50 text-emerald-600 font-bold py-2 px-4 rounded-lg transition text-sm flex justify-center items-center gap-2">
+                            <i class="fa-solid fa-trash-arrow-up"></i> Restore Task
+                        </button>
+                    `;
+                } else {
+                    deleteContainer.innerHTML = `
+                        <button onclick="cancelTaskFromDrawer()" id="deleteCtBtn" class="w-full border border-red-200 hover:bg-red-50 text-red-600 font-bold py-2 px-4 rounded-lg transition text-sm flex justify-center items-center gap-2">
+                            <i class="fa-solid fa-trash-can"></i> Cancel & Archive Task
+                        </button>
+                    `;
+                }
+            } else {
+                deleteContainer.innerHTML = '';
+            }
+        }
 
         document.getElementById('customTaskDrawerOverlay').classList.remove('hidden');
 
@@ -721,6 +1717,79 @@
         document.getElementById('customTaskDrawerOverlay').classList.add('hidden'); 
     }
 
+    async function cancelTaskFromDrawer() {
+        if (!confirm("Are you sure you want to cancel and archive this task?")) return;
+        
+        const btn = document.getElementById('deleteCtBtn');
+        const originalText = btn ? btn.innerHTML : '';
+        if (btn) btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Cancelling...';
+        
+        const pkCol = activeTask.task_id !== undefined ? 'task_id' : 'id';
+        const pkVal = activeTask[pkCol];
+        
+        try {
+            const cleanName = activeTask.custom_task_name.replace(/ \[Cancelled\]$/, '');
+            const updates = { 
+                status: 'Completed',
+                custom_task_name: cleanName + ' [Cancelled]'
+            };
+            const { error } = await supabaseClient.from('tasks').update(updates).eq(pkCol, pkVal);
+            if (error) throw error;
+            
+            await supabaseClient.from('task_logs').insert([{
+                task_id: pkVal,
+                user_id: currentUser.id,
+                note: `[Archived] Task was cancelled and archived.`,
+                timestamp: new Date().toISOString()
+            }]);
+            
+            closeTaskDrawer();
+            globalRefresh();
+        } catch(err) {
+            showToast("Error: " + err.message);
+        } finally {
+            if (btn) btn.innerHTML = originalText;
+        }
+    }
+
+    async function restoreTaskFromDrawer() {
+        if (!confirm("Are you sure you want to restore this task?")) return;
+        
+        const btn = document.getElementById('deleteCtBtn');
+        const originalText = btn ? btn.innerHTML : '';
+        if (btn) btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Restoring...';
+        
+        const pkCol = activeTask.task_id !== undefined ? 'task_id' : 'id';
+        const pkVal = activeTask[pkCol];
+        
+        try {
+            const cleanName = activeTask.custom_task_name.replace(/ \[Cancelled\]$/, '');
+            const updates = { 
+                status: 'Pending',
+                custom_task_name: cleanName
+            };
+            const { error } = await supabaseClient.from('tasks').update(updates).eq(pkCol, pkVal);
+            if (error) throw error;
+            
+            await supabaseClient.from('task_logs').insert([{
+                task_id: pkVal,
+                user_id: currentUser.id,
+                note: `[Restored] Task was restored to Pending.`,
+                timestamp: new Date().toISOString()
+            }]);
+            
+            closeTaskDrawer();
+            globalRefresh();
+        } catch(err) {
+            showToast("Error: " + err.message);
+        } finally {
+            if (btn) btn.innerHTML = originalText;
+        }
+    }
+
+    window.cancelTaskFromDrawer = cancelTaskFromDrawer;
+    window.restoreTaskFromDrawer = restoreTaskFromDrawer;
+
     async function saveTaskDrawer() {
         const btn = document.getElementById('saveCtDrawerBtn');
         btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving...';
@@ -749,25 +1818,38 @@
             const hasComment = note.length > 0;
             const hasDateChanged = isDateChanged;
             if (!hasComment && !hasDateChanged) {
-                alert("This task is overdue. You must write a comment or update the due date to save.");
+                showToast("This task is overdue. You must write a comment or update the due date to save.");
                 btn.innerHTML = '<i class="fa-solid fa-check"></i> Save Details & Log Note';
                 return;
             }
         }
 
         const updates = { 
-            status: newStatus, 
             assigned_to: assignee || null,
             due_date: dDate || null,
             estimated_fee: parseFloat(fee) || 0
         };
+
+        const cleanName = activeTask.is_custom ? activeTask.custom_task_name.replace(/ \[Cancelled\]$/, '') : '';
+
+        if (newStatus === 'Cancelled') {
+            updates.status = 'Completed';
+            if (activeTask.is_custom) {
+                updates.custom_task_name = cleanName + ' [Cancelled]';
+            }
+        } else {
+            updates.status = newStatus;
+            if (activeTask.is_custom) {
+                updates.custom_task_name = cleanName;
+            }
+        }
         
         const pkCol = activeTask.task_id !== undefined ? 'task_id' : 'id';
         const pkVal = activeTask[pkCol];
 
         if (!pkVal) {
             btn.innerHTML = '<i class="fa-solid fa-check"></i> Save Details & Log Note';
-            return alert("Error: Could not identify task ID.");
+            return showToast("Error: Could not identify task ID.");
         }
         
         await supabaseClient.from('tasks').update(updates).eq(pkCol, pkVal);
@@ -797,4 +1879,703 @@
             globalRefresh();
         }
     }
+
+    // ==========================================
+    // MODULE: AUDIT CHECKLIST DRAWER LOGIC
+    // ==========================================
+    let currentAuditChecklistState = {};
+
+    function loadSelectedAuditChecklist() {
+        const typeSelect = document.getElementById('auditChecklistTypeSelect');
+        const type = typeSelect ? typeSelect.value : '';
+        const clientId = currentActiveClient ? currentActiveClient.client_id : '';
+        const container = document.getElementById('auditChecklistContainer');
+        const progressEl = document.getElementById('auditChecklistProgress');
+
+        if (!type) {
+            container.innerHTML = '<div class="text-center py-10 text-gray-400 text-sm font-bold bg-gray-50 rounded-2xl border border-dashed border-gray-200">Please select an Audit Type above to load the checklist.</div>';
+            progressEl.innerText = '0/0 Completed';
+            return;
+        }
+
+        const masterList = getAuditMasterChecklist(type);
+        
+        if (!masterList || masterList.length === 0) {
+            container.innerHTML = '<div class="text-center py-10 text-gray-400 text-sm font-bold bg-gray-50 rounded-2xl border border-dashed border-gray-200">No stages configured for this audit type.</div>';
+            progressEl.innerText = '0/0 Completed';
+            return;
+        }
+
+        // Use global checklist state cache (we'll fetch/update this globally like subsidies)
+        const selectedYear = document.getElementById('auditYearFilter')?.value || 'FY_2025_26';
+        const statusMap = getAuditClientStatusMap(clientId, type, selectedYear);
+        currentAuditChecklistState = { clientId, type, statusMap, masterList };
+        
+        renderAuditChecklist();
+    }
+
+    function renderAuditChecklist() {
+        const { clientId, type, statusMap, masterList } = currentAuditChecklistState;
+        const container = document.getElementById('auditChecklistContainer');
+        const progressEl = document.getElementById('auditChecklistProgress');
+        
+        if (!container) return;
+        
+        container.innerHTML = '';
+        let completedCount = 0;
+        let isPreviousDone = true; // For sequential logic
+
+        masterList.forEach((item, index) => {
+            const stageName = item["Stage Name"] || item["stage"] || `Stage ${index + 1}`;
+            const currentStageStatus = statusMap[stageName];
+            const isDone = currentStageStatus === true;
+            const isNil = currentStageStatus === 'NIL';
+            const isDPT3Stage = stageName.toLowerCase().includes('dpt3');
+            
+            const selectedYear = document.getElementById("auditYearFilter")?.value || "FY_2025_26";
+            const mapKey = `${type}|${selectedYear}`;
+            let remarksMap = {};
+            if (window.globalChecklistRemarksMap && window.globalChecklistRemarksMap[clientId]) {
+                remarksMap = window.globalChecklistRemarksMap[clientId][mapKey] || {};
+                if (Object.keys(remarksMap).length === 0 && selectedYear === "FY_2025_26") {
+                    remarksMap = window.globalChecklistRemarksMap[clientId][type] || {};
+                }
+            }
+            const remark = remarksMap[stageName] || "";
+
+            let checkedByUserId = null;
+            if (window.globalChecklistUsersMap && window.globalChecklistUsersMap[clientId]) {
+                const uMap = window.globalChecklistUsersMap[clientId][mapKey] || {};
+                checkedByUserId = uMap[stageName];
+                if (!checkedByUserId && selectedYear === "FY_2025_26") {
+                    const uMap2 = window.globalChecklistUsersMap[clientId][type] || {};
+                    checkedByUserId = uMap2[stageName];
+                }
+            }
+            
+            let checkedByUserIsAdmin = false;
+            if ((isDone || isNil) && checkedByUserId && window.globalTeamMembers) {
+                const u = window.globalTeamMembers.find(member => member.id === checkedByUserId);
+                if (u && (u.role === "Admin" || u.name === "Mayank")) {
+                    checkedByUserIsAdmin = true;
+                }
+            }
+            
+            const needsAdminCheck = (isDone || isNil) && !checkedByUserIsAdmin;
+            
+            let isAdminDone = false;
+            let adminUserId = null;
+            if (needsAdminCheck) {
+                if (window.globalChecklistAdminStatusMap && window.globalChecklistAdminStatusMap[clientId]) {
+                    const adminStatusMap = window.globalChecklistAdminStatusMap[clientId][mapKey] || {};
+                    isAdminDone = adminStatusMap[stageName] === true;
+                    if (!isAdminDone && selectedYear === "FY_2025_26") {
+                        const adminStatusMap2 = window.globalChecklistAdminStatusMap[clientId][type] || {};
+                        isAdminDone = adminStatusMap2[stageName] === true;
+                    }
+                }
+                
+                if (window.globalChecklistAdminUsersMap && window.globalChecklistAdminUsersMap[clientId]) {
+                    const adminUsersMap = window.globalChecklistAdminUsersMap[clientId][mapKey] || {};
+                    adminUserId = adminUsersMap[stageName];
+                    if (!adminUserId && selectedYear === "FY_2025_26") {
+                        const adminUsersMap2 = window.globalChecklistAdminUsersMap[clientId][type] || {};
+                        adminUserId = adminUsersMap2[stageName];
+                    }
+                }
+            }
+            
+            const isFullyDone = isDone || isNil;
+            if (isFullyDone) completedCount++;
+
+            // Sequential logic: you can only click if previous is done. First one is always clickable.
+            const isDisabled = !isPreviousDone;
+            
+            const safeStageName = stageName.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            const safeRemark = remark.replace(/'/g, "&#39;").replace(/"/g, '&quot;');
+
+            let checkedByName = '';
+            if ((isDone || isNil) && checkedByUserId && window.globalTeamMembers) {
+                const u = window.globalTeamMembers.find(member => member.id === checkedByUserId);
+                if (u) checkedByName = u.name.split(" ")[0];
+            }
+            
+            let checkedByTag = "";
+            if (isDone || isNil) {
+                const actionLabel = isNil ? "NIL by" : "Checked by";
+                if (checkedByUserIsAdmin) {
+                    checkedByTag = `<span class="ml-2 text-[10px] font-bold ${isNil ? 'bg-amber-50 text-amber-800 border-amber-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'} px-2 py-0.5 rounded-md border flex-shrink-0 flex items-center gap-1 shadow-sm"><i class="fa-solid fa-user-shield text-[9px]"></i> ${actionLabel} ${checkedByName} (Admin)</span>`;
+                } else {
+                    if (checkedByName) {
+                        checkedByTag += `<span class="ml-2 text-[10px] font-bold ${isNil ? 'bg-amber-50 text-amber-800 border-amber-200' : 'bg-indigo-50 text-indigo-600 border-indigo-100'} px-2 py-0.5 rounded-md border flex-shrink-0 flex items-center gap-1 shadow-sm"><i class="fa-solid fa-user text-[9px]"></i> ${actionLabel} ${checkedByName}</span>`;
+                    }
+                    if (isAdminDone) {
+                        let adminByName = "";
+                        if (adminUserId && window.globalTeamMembers) {
+                            const adminUser = window.globalTeamMembers.find(member => member.id === adminUserId);
+                            if (adminUser) adminByName = adminUser.name.split(" ")[0];
+                        }
+                        if (adminByName) {
+                            checkedByTag += `<span class="ml-2 text-[10px] font-bold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-md border border-emerald-200 flex-shrink-0 flex items-center gap-1 shadow-sm"><i class="fa-solid fa-user-check text-[9px]"></i> Admin: ${adminByName}</span>`;
+                        }
+                    }
+                }
+            }
+            
+            // Base styling based on state
+            let containerClasses = `flex items-center gap-4 p-4 rounded-xl border-2 transition-all ${isDisabled ? "bg-gray-50 border-gray-100 opacity-60" : "bg-white border-gray-100 hover:border-indigo-200 shadow-sm group"}`;
+            
+            let checkmarkClasses = `w-6 h-6 rounded flex items-center justify-center shrink-0 border-2 transition-all ${isDisabled ? "bg-gray-100 border-gray-200 cursor-not-allowed" : "cursor-pointer bg-white border-gray-300 group-hover:border-indigo-400"} ${isDone ? "bg-indigo-600 border-indigo-600 text-white" : (isNil ? "bg-amber-100 border-amber-400 text-amber-800 font-black" : "")}`;
+            
+            let nilButtonHtml = "";
+            if (isDPT3Stage) {
+                const nilClasses = `px-2 py-1 text-[10px] font-black uppercase tracking-wider rounded-lg border transition-all shrink-0 cursor-pointer ${isNil ? "bg-amber-500 text-white border-amber-600 shadow-sm" : "bg-slate-100 text-slate-600 border-slate-200 hover:bg-amber-100 hover:text-amber-800"}`;
+                nilButtonHtml = `
+                <button type="button" onclick="event.stopPropagation(); toggleAuditChecklistNilItem('${safeStageName}', ${!isNil})" class="${nilClasses}" ${isDisabled ? 'disabled' : ''} title="Mark DPT3 stage as NIL">
+                    NIL
+                </button>`;
+            }
+
+            let adminCheckHtml = "";
+            if (needsAdminCheck) {
+                const isAdminUser = currentUser && (currentUser.role === "Admin" || currentUser.name === "Mayank");
+                const adminCheckmarkClasses = `w-6 h-6 rounded flex items-center justify-center shrink-0 border-2 transition-all ${!isAdminUser ? "bg-gray-100 border-gray-200 cursor-not-allowed" : "cursor-pointer bg-white border-gray-300 hover:border-emerald-400"} ${isAdminDone ? "bg-emerald-600 border-emerald-600 text-white" : ""}`;
+                
+                adminCheckHtml = `
+                <div class="${adminCheckmarkClasses}" ${!isAdminUser ? "" : `onclick="toggleAuditChecklistAdminItem('${safeStageName}', ${!isAdminDone})"`} title="${!isAdminUser ? "Only admins can check this box" : "Admin Approval Checkbox"}">
+                    ${isAdminDone ? '<i class="fa-solid fa-user-check text-xs"></i>' : '<i class="fa-solid fa-user-shield text-[10px] text-gray-400"></i>'}
+                </div>
+                `;
+            }
+
+            container.innerHTML += `
+            <div class="${containerClasses}">
+                <div class="flex items-center gap-2 shrink-0">
+                    <div class="${checkmarkClasses}" ${isDisabled ? "" : `onclick="toggleAuditChecklistItem('${safeStageName}', ${!isDone})"`} title="${isDone ? 'Checked' : (isNil ? 'Marked as NIL' : 'Click to Check')}">
+                        ${isDone ? '<i class="fa-solid fa-check text-xs"></i>' : (isNil ? '<span class="text-[9px] font-black">NIL</span>' : '')}
+                    </div>
+                    ${nilButtonHtml}
+                    ${adminCheckHtml}
+                </div>
+                <div class="flex-1 flex flex-col overflow-hidden">
+                    <div class="flex items-center justify-between gap-3">
+                        <div class="flex items-center gap-2 truncate">
+                            <span class="text-sm font-bold ${isDone ? 'text-slate-400 line-through' : (isNil ? 'text-amber-800 font-extrabold' : 'text-slate-700')} truncate ${isDisabled ? 'cursor-not-allowed' : 'cursor-pointer'}" title="${stageName}" ${isDisabled ? '' : `onclick="toggleAuditChecklistItem('${safeStageName}', ${!isDone})"`}>${stageName}</span>
+                            ${checkedByTag}
+                        </div>
+                        <input type="text" class="text-xs font-medium text-slate-700 px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 shrink-0 w-32 outline-none focus:border-indigo-400 focus:bg-white transition-colors" placeholder="Remark..." value="${safeRemark}" onchange="saveAuditChecklistRemark('${safeStageName}', this.value)" ${isDisabled ? 'disabled' : ''}>
+                    </div>
+                </div>
+            </div>
+            `;
+            
+            if (!isFullyDone) isPreviousDone = false;
+        });
+
+        progressEl.innerText = `${completedCount}/${masterList.length} Completed`;
+        
+        // Let's also update the "Current Stage" globally.
+        updateAuditCurrentStageDisplay(clientId, type, statusMap, masterList);
+    }
+
+    async function toggleAuditChecklistItem(stageName, newStatus) {
+        const { clientId, type } = currentAuditChecklistState;
+        const selectedYear = document.getElementById("auditYearFilter")?.value || "FY_2025_26";
+        const mapKey = `${type}|${selectedYear}`;
+        
+        // Optimistic UI update
+        if (!window.globalChecklistStatusMap) window.globalChecklistStatusMap = {};
+        if (!window.globalChecklistStatusMap[clientId]) window.globalChecklistStatusMap[clientId] = {};
+        if (!window.globalChecklistStatusMap[clientId][mapKey]) window.globalChecklistStatusMap[clientId][mapKey] = {};
+        
+        window.globalChecklistStatusMap[clientId][mapKey][stageName] = newStatus;
+        if (selectedYear === "FY_2025_26") {
+            if (!window.globalChecklistStatusMap[clientId][type]) window.globalChecklistStatusMap[clientId][type] = {};
+            window.globalChecklistStatusMap[clientId][type][stageName] = newStatus;
+        }
+        
+        if (newStatus === true) {
+            if (!window.globalChecklistUsersMap) window.globalChecklistUsersMap = {};
+            if (!window.globalChecklistUsersMap[clientId]) window.globalChecklistUsersMap[clientId] = {};
+            if (!window.globalChecklistUsersMap[clientId][mapKey]) window.globalChecklistUsersMap[clientId][mapKey] = {};
+            window.globalChecklistUsersMap[clientId][mapKey][stageName] = currentUser.id;
+            
+            if (selectedYear === "FY_2025_26") {
+                if (!window.globalChecklistUsersMap[clientId][type]) window.globalChecklistUsersMap[clientId][type] = {};
+                window.globalChecklistUsersMap[clientId][type][stageName] = currentUser.id;
+            }
+        } else {
+            if (window.globalChecklistUsersMap && window.globalChecklistUsersMap[clientId] && window.globalChecklistUsersMap[clientId][mapKey]) {
+                delete window.globalChecklistUsersMap[clientId][mapKey][stageName];
+            }
+            if (selectedYear === "FY_2025_26" && window.globalChecklistUsersMap && window.globalChecklistUsersMap[clientId] && window.globalChecklistUsersMap[clientId][type]) {
+                delete window.globalChecklistUsersMap[clientId][type][stageName];
+            }
+        }
+
+        // Reset admin status on status changes
+        if (window.globalChecklistAdminStatusMap && window.globalChecklistAdminStatusMap[clientId]) {
+            if (window.globalChecklistAdminStatusMap[clientId][mapKey]) delete window.globalChecklistAdminStatusMap[clientId][mapKey][stageName];
+            if (selectedYear === "FY_2025_26" && window.globalChecklistAdminStatusMap[clientId][type]) delete window.globalChecklistAdminStatusMap[clientId][type][stageName];
+        }
+        if (window.globalChecklistAdminUsersMap && window.globalChecklistAdminUsersMap[clientId]) {
+            if (window.globalChecklistAdminUsersMap[clientId][mapKey]) delete window.globalChecklistAdminUsersMap[clientId][mapKey][stageName];
+            if (selectedYear === "FY_2025_26" && window.globalChecklistAdminUsersMap[clientId][type]) delete window.globalChecklistAdminUsersMap[clientId][type][stageName];
+        }
+        
+        currentAuditChecklistState.statusMap = window.globalChecklistStatusMap[clientId][mapKey];
+        renderAuditChecklist(); // Instant feedback!
+
+        // Save to Database
+        const currentRemark = (window.globalChecklistRemarksMap && window.globalChecklistRemarksMap[clientId] && window.globalChecklistRemarksMap[clientId][mapKey] && window.globalChecklistRemarksMap[clientId][mapKey][stageName]) || "";
+        const note = `[AUDIT_CHECKLIST_STATUS] TYPE:${type}|STAGE:${stageName}|STATUS:${newStatus}|YEAR:${selectedYear}|USER_ID:${newStatus ? currentUser.id : ""}|ADMIN_STATUS:false|ADMIN_USER_ID:${currentRemark ? "|REMARK:" + currentRemark : ""}`;
+        
+        const { error } = await supabaseClient.from("task_logs").insert([{
+            client_id: clientId,
+            user_id: currentUser.id,
+            note
+        }]);
+
+        if (error) {
+            showToast("Error saving progress: " + error.message);
+            // Revert
+            window.globalChecklistStatusMap[clientId][mapKey][stageName] = !newStatus;
+            if (selectedYear === "FY_2025_26") {
+                window.globalChecklistStatusMap[clientId][type][stageName] = !newStatus;
+            }
+            currentAuditChecklistState.statusMap = window.globalChecklistStatusMap[clientId][mapKey];
+            renderAuditChecklist();
+        } else {
+            // Success, re-render main table so Current Stage column updates immediately
+            filterAudits();
+        }
+    }
+
+async function toggleAuditChecklistAdminItem(stageName, newAdminStatus) {
+        const { clientId, type } = currentAuditChecklistState;
+        const selectedYear = document.getElementById("auditYearFilter")?.value || "FY_2025_26";
+        const mapKey = `${type}|${selectedYear}`;
+        
+        const isAdminUser = currentUser && (currentUser.role === "Admin" || currentUser.name === "Mayank");
+        if (!isAdminUser) return showToast("Only admins can verify checklist items.");
+
+        // Optimistic UI update
+        if (!window.globalChecklistAdminStatusMap) window.globalChecklistAdminStatusMap = {};
+        if (!window.globalChecklistAdminStatusMap[clientId]) window.globalChecklistAdminStatusMap[clientId] = {};
+        if (!window.globalChecklistAdminStatusMap[clientId][mapKey]) window.globalChecklistAdminStatusMap[clientId][mapKey] = {};
+        
+        window.globalChecklistAdminStatusMap[clientId][mapKey][stageName] = newAdminStatus;
+        if (selectedYear === "FY_2025_26") {
+            if (!window.globalChecklistAdminStatusMap[clientId][type]) window.globalChecklistAdminStatusMap[clientId][type] = {};
+            window.globalChecklistAdminStatusMap[clientId][type][stageName] = newAdminStatus;
+        }
+
+        if (newAdminStatus === true) {
+            if (!window.globalChecklistAdminUsersMap) window.globalChecklistAdminUsersMap = {};
+            if (!window.globalChecklistAdminUsersMap[clientId]) window.globalChecklistAdminUsersMap[clientId] = {};
+            if (!window.globalChecklistAdminUsersMap[clientId][mapKey]) window.globalChecklistAdminUsersMap[clientId][mapKey] = {};
+            window.globalChecklistAdminUsersMap[clientId][mapKey][stageName] = currentUser.id;
+            
+            if (selectedYear === "FY_2025_26") {
+                if (!window.globalChecklistAdminUsersMap[clientId][type]) window.globalChecklistAdminUsersMap[clientId][type] = {};
+                window.globalChecklistAdminUsersMap[clientId][type][stageName] = currentUser.id;
+            }
+        } else {
+            if (window.globalChecklistAdminUsersMap && window.globalChecklistAdminUsersMap[clientId] && window.globalChecklistAdminUsersMap[clientId][mapKey]) {
+                delete window.globalChecklistAdminUsersMap[clientId][mapKey][stageName];
+            }
+            if (selectedYear === "FY_2025_26" && window.globalChecklistAdminUsersMap && window.globalChecklistAdminUsersMap[clientId] && window.globalChecklistAdminUsersMap[clientId][type]) {
+                delete window.globalChecklistAdminUsersMap[clientId][type][stageName];
+            }
+        }
+
+        renderAuditChecklist(); // Instant feedback!
+
+        // Save to Database
+        let originalUserId = null;
+        if (window.globalChecklistUsersMap && window.globalChecklistUsersMap[clientId] && window.globalChecklistUsersMap[clientId][mapKey]) {
+            originalUserId = window.globalChecklistUsersMap[clientId][mapKey][stageName];
+        }
+        if (!originalUserId) originalUserId = currentUser.id; // Fallback
+
+        const currentRemark = (window.globalChecklistRemarksMap && window.globalChecklistRemarksMap[clientId] && window.globalChecklistRemarksMap[clientId][mapKey] && window.globalChecklistRemarksMap[clientId][mapKey][stageName]) || "";
+        
+        const note = `[AUDIT_CHECKLIST_STATUS] TYPE:${type}|STAGE:${stageName}|STATUS:true|YEAR:${selectedYear}|USER_ID:${originalUserId}|ADMIN_STATUS:${newAdminStatus}|ADMIN_USER_ID:${currentUser.id}${currentRemark ? "|REMARK:" + currentRemark : ""}`;
+        
+        const { error } = await supabaseClient.from("task_logs").insert([{
+            client_id: clientId,
+            user_id: currentUser.id,
+            note
+        }]);
+
+        if (error) {
+            showToast("Error saving admin verification: " + error.message);
+            // Revert
+            window.globalChecklistAdminStatusMap[clientId][mapKey][stageName] = !newAdminStatus;
+            if (selectedYear === "FY_2025_26") {
+                window.globalChecklistAdminStatusMap[clientId][type][stageName] = !newAdminStatus;
+            }
+            renderAuditChecklist();
+        } else {
+            filterAudits();
+        }
+    }
+
+    async function saveAuditChecklistRemark(stageName, newRemark) {
+        const { clientId, type, statusMap } = currentAuditChecklistState;
+        const selectedYear = document.getElementById("auditYearFilter")?.value || "FY_2025_26";
+        const mapKey = `${type}|${selectedYear}`;
+        
+        // Save to cache
+        if (!window.globalChecklistRemarksMap) window.globalChecklistRemarksMap = {};
+        if (!window.globalChecklistRemarksMap[clientId]) window.globalChecklistRemarksMap[clientId] = {};
+        if (!window.globalChecklistRemarksMap[clientId][mapKey]) window.globalChecklistRemarksMap[clientId][mapKey] = {};
+        
+        window.globalChecklistRemarksMap[clientId][mapKey][stageName] = newRemark;
+        if (selectedYear === "FY_2025_26") {
+            if (!window.globalChecklistRemarksMap[clientId][type]) window.globalChecklistRemarksMap[clientId][type] = {};
+            window.globalChecklistRemarksMap[clientId][type][stageName] = newRemark;
+        }
+        
+        const currentStatus = statusMap[stageName] === true;
+
+        let checkerId = "";
+        if (window.globalChecklistUsersMap && window.globalChecklistUsersMap[clientId] && window.globalChecklistUsersMap[clientId][mapKey]) {
+            checkerId = window.globalChecklistUsersMap[clientId][mapKey][stageName] || "";
+        }
+        
+        let adminStatus = false;
+        if (window.globalChecklistAdminStatusMap && window.globalChecklistAdminStatusMap[clientId] && window.globalChecklistAdminStatusMap[clientId][mapKey]) {
+            adminStatus = window.globalChecklistAdminStatusMap[clientId][mapKey][stageName] === true;
+        }
+        
+        let adminUserId = "";
+        if (window.globalChecklistAdminUsersMap && window.globalChecklistAdminUsersMap[clientId] && window.globalChecklistAdminUsersMap[clientId][mapKey]) {
+            adminUserId = window.globalChecklistAdminUsersMap[clientId][mapKey][stageName] || "";
+        }
+
+        // Save to Database (preserving full checklist status map state)
+        const note = `[AUDIT_CHECKLIST_STATUS] TYPE:${type}|STAGE:${stageName}|STATUS:${currentStatus}|YEAR:${selectedYear}|USER_ID:${checkerId}|ADMIN_STATUS:${adminStatus}|ADMIN_USER_ID:${adminUserId}|REMARK:${newRemark}`;
+        const { error } = await supabaseClient.from("task_logs").insert([{
+            client_id: clientId,
+            user_id: currentUser.id,
+            note
+        }]);
+
+        if (error) {
+            showToast("Error saving remark: " + error.message);
+        }
+    }
+
+    function updateAuditCurrentStageDisplay(clientId, type, statusMap, masterList) {
+        const lastCompletedStage = computeAuditCurrentStage(masterList, statusMap);
+        
+        // We will store this transiently so renderAuditsTable can read it
+        if (!window.globalAuditCurrentStageCache) window.globalAuditCurrentStageCache = {};
+        window.globalAuditCurrentStageCache[clientId] = lastCompletedStage;
+    }
+
+    // ==========================================
+    // MODULE: AUDIT CHECKLIST MANAGER (SETTINGS)
+    // ==========================================
+    function renderAuditCategoriesTable() {
+        const list = document.getElementById('audit-categories-list');
+        if (!list) return;
+        list.innerHTML = '';
+        
+        let displayedCount = 0;
+        
+        if (window.globalSubsidyCategoriesCache) {
+            window.globalSubsidyCategoriesCache.forEach(cat => {
+                if (!cat.toUpperCase().startsWith('AUDIT_')) return;
+                
+                displayedCount++;
+                const displayName = cat.substring(6); // Remove 'AUDIT_'
+                const masterList = getAuditMasterChecklist(displayName);
+                const hasChecklist = masterList && masterList.length > 0;
+                const safeCat = cat.replace(/'/g, "\\'");
+                const safeDisplayName = displayName.replace(/'/g, "\\'");
+                
+                const statusLabel = hasChecklist ? 
+                    `<span class="text-indigo-300 bg-indigo-500/20 px-2 py-1 rounded border border-indigo-500/30 flex items-center gap-1 w-fit"><i class="fa-solid fa-check-circle"></i> ${masterList.length} Stages</span>` : 
+                    `<span class="text-amber-400 bg-amber-500/20 px-2 py-1 rounded border border-amber-500/30 flex items-center gap-1 w-fit"><i class="fa-solid fa-circle-exclamation"></i> No Checklist</span>`;
+
+                list.innerHTML += `
+                <tr class="hover:bg-white/5 transition">
+                    <td class="px-5 py-4 font-black text-white">${safeDisplayName}</td>
+                    <td class="px-5 py-4">
+                        <div class="flex flex-col gap-2">
+                            ${statusLabel}
+                            <div class="flex items-center gap-2">
+                                <button onclick="downloadAuditChecklist('${safeDisplayName}')" class="text-[10px] font-black text-indigo-400 hover:text-indigo-300 hover:underline uppercase tracking-widest transition">
+                                    <i class="fa-solid fa-download"></i> Template
+                                </button>
+                                <span class="text-white/20">|</span>
+                                <label class="text-[10px] font-black text-emerald-400 hover:text-emerald-300 hover:underline uppercase tracking-widest cursor-pointer transition">
+                                    <i class="fa-solid fa-upload"></i> Upload
+                                    <input type="file" class="hidden" onchange="uploadAuditChecklist('${safeDisplayName}', event)" accept=".xlsx, .xls">
+                                </label>
+                            </div>
+                        </div>
+                    </td>
+                    <td class="px-5 py-4 text-right">
+                        <button onclick="deleteAuditCategory('${safeDisplayName}')" class="h-9 w-9 text-red-400/70 hover:text-red-400 hover:bg-red-500/20 rounded-xl transition-all">
+                            <i class="fa-solid fa-trash-can"></i>
+                        </button>
+                    </td>
+                </tr>`;
+            });
+        }
+        
+        if (displayedCount === 0) {
+            list.innerHTML = '<tr><td colspan="3" class="text-center py-8 text-indigo-200/50">No audit types configured yet.</td></tr>';
+        }
+    }
+
+    async function addAuditCategory() {
+        const input = document.getElementById('newAuditCategoryName');
+        const displayName = input.value.trim();
+        if (!displayName) return;
+        
+        const cat = 'AUDIT_' + displayName;
+
+        const hostClientId = globalClientsList.find(c => c.is_active !== false)?.client_id;
+        if (!hostClientId) return showToast("Error: No active client found to save configuration.");
+
+        const btn = event.currentTarget;
+        const ogText = btn.innerHTML;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Adding...';
+
+        const { error: catErr } = await supabaseClient
+            .from('subsidy_categories')
+            .insert([{ name: cat, checklist: [] }]);
+
+        if (catErr) {
+            btn.innerHTML = ogText;
+            return showToast("Error adding category: " + catErr.message);
+        }
+
+        await supabaseClient.from('task_logs').insert([{
+            client_id: hostClientId,
+            user_id: currentUser.id,
+            note: `[AUDIT_GLOBAL_CONFIG] TYPE_ADD:${displayName}`
+        }]);
+
+        input.value = '';
+        btn.innerHTML = ogText;
+        if(typeof fetchSubsidySettings === 'function') await fetchSubsidySettings();
+        renderAuditCategoriesTable();
+    }
+
+    async function deleteAuditCategory(displayName) {
+        if (!confirm(`Delete Audit Type "${displayName}" and its checklist?`)) return;
+
+        const cat = 'AUDIT_' + displayName;
+        const hostClientId = globalClientsList.find(c => c.is_active !== false)?.client_id;
+        if (!hostClientId) return;
+
+        const { error: catErr } = await supabaseClient
+            .from('subsidy_categories')
+            .delete()
+            .eq('name', cat);
+
+        if (catErr) return showToast("Error deleting category: " + catErr.message);
+
+        await supabaseClient.from('task_logs').insert([{
+            client_id: hostClientId,
+            user_id: currentUser.id,
+            note: `[AUDIT_GLOBAL_CONFIG] TYPE_DEL:${displayName}`
+        }]);
+
+        if(typeof fetchSubsidySettings === 'function') await fetchSubsidySettings();
+        renderAuditCategoriesTable();
+    }
+
+    function downloadAuditChecklist(displayName) {
+        try {
+            let data = getAuditMasterChecklist(displayName);
+            
+            // Generate template if empty
+            if (!data || data.length === 0) {
+                data = [
+                    { "Serial No": 1, "Stage Name": "Planning", "Requirement": "Mandatory" },
+                    { "Serial No": 2, "Stage Name": "Execution", "Requirement": "Mandatory" },
+                    { "Serial No": 3, "Stage Name": "Review", "Requirement": "Optional" }
+                ];
+            }
+
+            const ws = XLSX.utils.json_to_sheet(data);
+            const wb = XLSX.utils.book_new();
+            wb.Props = {
+                Title: `${displayName} Checklist`,
+                Subject: `AUDIT_CHECKLIST_${displayName.toUpperCase()}`,
+                Author: "Office OS"
+            };
+            XLSX.utils.book_append_sheet(wb, ws, "Checklist");
+            
+            const fileName = `${displayName.replace(/[^a-z0-9]/gi, '_')}_Checklist.xlsx`;
+            XLSX.writeFile(wb, fileName);
+        } catch (err) {
+            console.error("Download error:", err);
+            showToast("Error generating download: " + err.message);
+        }
+    }
+
+    function uploadAuditChecklist(displayName, event) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        const cat = 'AUDIT_' + displayName;
+        const expectedBase = displayName.replace(/[^a-z0-9]/gi, '_');
+        const escapeRegExp = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const escapedBase = escapeRegExp(expectedBase);
+        const expectedPattern = new RegExp(`^${escapedBase}_Checklist(?:\\s*\\(\\d+\\))?\\.xlsx$`, 'i');
+
+        if (!expectedPattern.test(file.name)) {
+            showToast(`Accidental Upload Blocked!\nYou are trying to upload a checklist for "${displayName}", but the file you selected ("${file.name}") does not match the expected filename structure (e.g., "${expectedBase}_Checklist.xlsx").\n\nPlease select the correct file downloaded from the "${displayName}" section.`);
+            event.target.value = '';
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+            try {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, { type: 'array' });
+
+                const fileSubject = workbook.Props ? workbook.Props.Subject : null;
+                const fileTitle = workbook.Props ? workbook.Props.Title : null;
+                if (fileSubject && fileSubject.toUpperCase() !== `AUDIT_CHECKLIST_${displayName.toUpperCase()}`) {
+                    showToast(`Accidental Upload Blocked!\nThis file contains checklist data for "${fileTitle || fileSubject}", but you are trying to upload it to "${displayName}".\n\nPlease select the correct file.`);
+                    event.target.value = '';
+                    return;
+                }
+
+                const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+                const jsonData = XLSX.utils.sheet_to_json(firstSheet);
+
+                if (jsonData.length === 0) return showToast("Excel sheet is empty!");
+
+                // Normalize Requirement and Stage Name
+                jsonData.forEach(item => {
+                    let reqVal = item["Requirement"] || item["req"];
+                    if (reqVal) {
+                        const cleanReq = reqVal.toString().trim().toLowerCase();
+                        if (cleanReq.startsWith('man') || cleanReq === 'm' || cleanReq.includes('yes') || cleanReq.includes('req')) {
+                            item["Requirement"] = 'Mandatory';
+                        } else {
+                            item["Requirement"] = 'Optional';
+                        }
+                    } else {
+                        item["Requirement"] = 'Optional';
+                    }
+
+                    if (item["Stage Name"] === undefined && item["stage"] !== undefined) item["Stage Name"] = item["stage"];
+                    if (item["Serial No"] === undefined && item["sr"] !== undefined) item["Serial No"] = item["sr"];
+                });
+
+                const hostClientId = globalClientsList.find(c => c.is_active !== false)?.client_id;
+                
+                const { error } = await supabaseClient
+                    .from('subsidy_categories')
+                    .update({ checklist: jsonData })
+                    .eq('name', cat);
+
+                await supabaseClient.from('task_logs').insert([{
+                    client_id: hostClientId,
+                    user_id: currentUser.id,
+                    note: `[AUDIT_GLOBAL_CONFIG] CHECKLIST_UPLOADED:${displayName}`
+                }]);
+
+                if (error) showToast("Error uploading checklist: " + error.message);
+                else {
+                    showToast("Audit Checklist updated successfully!");
+                    if(typeof fetchSubsidySettings === 'function') await fetchSubsidySettings();
+                    renderAuditCategoriesTable();
+                }
+            } catch (err) {
+                console.error("Upload error:", err);
+                showToast("Error processing upload: " + err.message);
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    }
+
+    async function toggleAuditChecklistNilItem(stageName, newNilStatus) {
+        const { clientId, type } = currentAuditChecklistState;
+        const selectedYear = document.getElementById("auditYearFilter")?.value || "FY_2025_26";
+        const mapKey = `${type}|${selectedYear}`;
+        
+        const newStatus = newNilStatus ? 'NIL' : false;
+
+        // Optimistic UI update
+        if (!window.globalChecklistStatusMap) window.globalChecklistStatusMap = {};
+        if (!window.globalChecklistStatusMap[clientId]) window.globalChecklistStatusMap[clientId] = {};
+        if (!window.globalChecklistStatusMap[clientId][mapKey]) window.globalChecklistStatusMap[clientId][mapKey] = {};
+        
+        window.globalChecklistStatusMap[clientId][mapKey][stageName] = newStatus;
+        if (selectedYear === "FY_2025_26") {
+            if (!window.globalChecklistStatusMap[clientId][type]) window.globalChecklistStatusMap[clientId][type] = {};
+            window.globalChecklistStatusMap[clientId][type][stageName] = newStatus;
+        }
+
+        if (newNilStatus) {
+            if (!window.globalChecklistUsersMap) window.globalChecklistUsersMap = {};
+            if (!window.globalChecklistUsersMap[clientId]) window.globalChecklistUsersMap[clientId] = {};
+            if (!window.globalChecklistUsersMap[clientId][mapKey]) window.globalChecklistUsersMap[clientId][mapKey] = {};
+            window.globalChecklistUsersMap[clientId][mapKey][stageName] = currentUser ? currentUser.id : null;
+            
+            if (selectedYear === "FY_2025_26") {
+                if (!window.globalChecklistUsersMap[clientId][type]) window.globalChecklistUsersMap[clientId][type] = {};
+                window.globalChecklistUsersMap[clientId][type][stageName] = currentUser ? currentUser.id : null;
+            }
+        } else {
+            if (window.globalChecklistUsersMap && window.globalChecklistUsersMap[clientId] && window.globalChecklistUsersMap[clientId][mapKey]) {
+                delete window.globalChecklistUsersMap[clientId][mapKey][stageName];
+            }
+            if (selectedYear === "FY_2025_26" && window.globalChecklistUsersMap && window.globalChecklistUsersMap[clientId] && window.globalChecklistUsersMap[clientId][type]) {
+                delete window.globalChecklistUsersMap[clientId][type][stageName];
+            }
+        }
+
+        renderAuditChecklist(); // Instant feedback!
+
+        // Save to Database
+        const currentRemark = (window.globalChecklistRemarksMap && window.globalChecklistRemarksMap[clientId] && window.globalChecklistRemarksMap[clientId][mapKey] && window.globalChecklistRemarksMap[clientId][mapKey][stageName]) || "";
+        const note = `[AUDIT_CHECKLIST_STATUS] TYPE:${type}|STAGE:${stageName}|STATUS:${newStatus}|YEAR:${selectedYear}|USER_ID:${newNilStatus && currentUser ? currentUser.id : ""}|ADMIN_STATUS:false|ADMIN_USER_ID:${currentRemark ? "|REMARK:" + currentRemark : ""}`;
+        
+        const { error } = await supabaseClient.from("task_logs").insert([{
+            client_id: clientId,
+            user_id: currentUser ? currentUser.id : null,
+            note
+        }]);
+
+        if (error) {
+            showToast("Error saving NIL status: " + error.message);
+            // Revert
+            window.globalChecklistStatusMap[clientId][mapKey][stageName] = !newNilStatus;
+            if (selectedYear === "FY_2025_26") {
+                window.globalChecklistStatusMap[clientId][type][stageName] = !newNilStatus;
+            }
+            renderAuditChecklist();
+        } else {
+            filterAudits();
+        }
+    }
+
+    window.openTaskDrawer = openTaskDrawer;
+    window.openAuditDrawer = openAuditDrawer;
+    window.addAuditCategory = addAuditCategory;
+    window.uploadAuditChecklist = uploadAuditChecklist;
+    window.deleteAuditCategory = deleteAuditCategory;
+    window.downloadAuditChecklist = downloadAuditChecklist;
+    window.toggleAuditChecklistItem = toggleAuditChecklistItem;
+    window.toggleAuditChecklistNilItem = toggleAuditChecklistNilItem;
+    window.toggleAuditChecklistAdminItem = toggleAuditChecklistAdminItem;
+    window.saveAuditChecklistRemark = saveAuditChecklistRemark;
+    window.loadSelectedAuditChecklist = loadSelectedAuditChecklist;
+    window.getAuditMasterChecklist = getAuditMasterChecklist;
+    window.getAuditClientStatusMap = getAuditClientStatusMap;
+    window.computeAuditCurrentStage = computeAuditCurrentStage;
+    window.getClientAuditType = getClientAuditType;
 </script>

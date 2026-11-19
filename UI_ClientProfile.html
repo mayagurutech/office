@@ -14,6 +14,10 @@
         <!-- Body -->
         <div class="p-8 overflow-y-auto space-y-6 max-h-[70vh] os-scroll">
             <div class="space-y-4">
+                <div id="editClientCodeContainer" class="hidden">
+                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">Client Code</label>
+                    <input type="text" id="editClientCode" readonly class="w-full rounded-2xl border border-slate-200 p-4 text-sm font-bold outline-none bg-slate-100 transition-all duration-300">
+                </div>
                 <div>
                     <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">Client Name *</label>
                     <input type="text" id="editClientName" class="w-full rounded-2xl border border-slate-200 p-4 text-sm font-bold outline-none focus:ring-2 focus:ring-violet-500 bg-slate-50 transition-all duration-300 focus:bg-white">
@@ -21,8 +25,14 @@
                 
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">PAN Number</label>
+                        <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">PAN Number *</label>
                         <input type="text" id="editClientPan" class="w-full rounded-2xl border border-slate-200 p-4 text-sm font-bold outline-none focus:ring-2 focus:ring-violet-500 bg-slate-50 uppercase transition-all duration-300 focus:bg-white">
+                        
+                        <!-- Checkbox for PAN Not Available (only shown for admins) -->
+                        <div id="panNotAvailableContainer" class="hidden mt-2 px-1 flex items-center gap-2">
+                            <input type="checkbox" id="panNotAvailableCheckbox" onchange="togglePanNotAvailable(this)" class="w-4 h-4 text-violet-600 rounded border-gray-300 cursor-pointer">
+                            <label for="panNotAvailableCheckbox" class="text-[10px] font-bold text-slate-500 uppercase tracking-wider cursor-pointer">PAN Not Available</label>
+                        </div>
                     </div>
                     <div>
                         <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">GSTIN</label>
@@ -60,7 +70,7 @@
                     </div>
                 </div>
 
-                <div>
+                <div class="hidden">
                     <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 px-1 border-b border-slate-100 pb-2">Enrollment Categories</label>
                     <div id="editClientServicesCheckboxes" class="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto p-2 bg-slate-50 rounded-2xl border border-slate-100 shadow-inner">
                         <!-- Checkboxes injected here -->
@@ -90,12 +100,14 @@
                     <span class="text-[10px] font-black text-indigo-100 uppercase tracking-widest mb-1.5 block" id="prof-client-entity">Entity Type</span>
                     <h3 id="prof-client-name" class="text-2xl md:text-3xl font-black tracking-tight mb-2">Client Name</h3>
                     <div class="flex flex-wrap gap-x-6 gap-y-2 mt-3">
+                        <p class="text-xs font-bold text-white uppercase tracking-widest flex items-center gap-1.5 bg-white/10 px-3 py-1.5 rounded-lg"><i class="fa-solid fa-hashtag text-xs text-indigo-200"></i> Code: <span id="prof-client-code" class="font-black">CODE</span></p>
                         <p class="text-xs font-bold text-white uppercase tracking-widest flex items-center gap-1.5 bg-white/10 px-3 py-1.5 rounded-lg"><i class="fa-solid fa-id-card text-xs text-indigo-200"></i> PAN: <span id="prof-client-pan" class="font-black">PAN</span></p>
                         <p class="text-xs font-bold text-white uppercase tracking-widest flex items-center gap-1.5 bg-white/10 px-3 py-1.5 rounded-lg"><i class="fa-solid fa-receipt text-xs text-indigo-200"></i> GST: <span id="prof-client-gst" class="font-black">GST</span></p>
                     </div>
                 </div>
                 <div class="flex items-center gap-3 relative z-10">
                     <button onclick="openEditClient()" class="bg-white/10 text-white hover:bg-white hover:text-indigo-600 border border-white/20 px-5 py-2.5 rounded-xl text-xs font-bold transition-all duration-300 flex items-center gap-1.5 shadow-lg hover:scale-[1.02] active:scale-[0.98]"><i class="fa-solid fa-pen-to-square text-xs"></i> Edit Profile</button>
+                    <button id="prof-archive-btn" onclick="archiveOrRestoreCurrentClient()" class="bg-amber-500/20 text-amber-100 hover:bg-amber-600 hover:text-white border border-amber-500/30 px-5 py-2.5 rounded-xl text-xs font-bold transition-all duration-300 flex items-center gap-1.5 shadow-lg hover:scale-[1.02] active:scale-[0.98]"><i class="fa-solid fa-box-archive text-xs"></i> Archive Client</button>
                     <button onclick="deleteClient()" class="bg-red-500/20 text-red-100 hover:bg-red-600 hover:text-white border border-red-500/30 px-5 py-2.5 rounded-xl text-xs font-bold transition-all duration-300 flex items-center gap-1.5 shadow-lg hover:scale-[1.02] active:scale-[0.98]"><i class="fa-solid fa-trash text-xs"></i> Delete Client</button>
                 </div>
             </div>
@@ -142,25 +154,7 @@
                 </div>
             </div>
             <div class="space-y-6">
-                <!-- Tally Financials -->
-                <div class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden hover:shadow-md transition-all duration-300 group">
-                    <div class="p-5 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
-                        <h4 class="font-black text-slate-800 text-xs uppercase tracking-wider"><i class="fa-solid fa-wallet text-rose-500 mr-2"></i> Tally Financials</h4>
-                        <span class="text-xs font-black bg-white border border-slate-100 px-3 py-1.5 rounded-lg text-slate-600 shadow-sm">Total Due: <span id="prof-total-due" class="text-rose-600 ml-1 text-sm font-black">₹0</span></span>
-                    </div>
-                    <div class="p-6">
-                        <p class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Mapped Tally Ledgers</p>
-                        <div id="prof-mapped-ledgers" class="space-y-2 mb-4"></div>
-                        <div class="pt-5 border-t border-slate-100 mt-3 bg-slate-50/50 -mx-6 px-6 -mb-6 pb-6">
-                            <p class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">Map Another Ledger</p>
-                            <div class="flex gap-3">
-                                <input type="text" list="profLedgerDatalist" id="prof-ledger-search" class="flex-1 border border-slate-200 rounded-lg p-2.5 text-xs font-bold outline-none bg-white focus:ring-2 focus:ring-indigo-500 transition-all duration-300 shadow-sm" placeholder="Search & Auto-fill ledger...">
-                                <datalist id="profLedgerDatalist"></datalist>
-                                <button onclick="linkLedgerToClient()" id="profLinkLedgerBtn" class="bg-indigo-600 text-white px-5 py-2.5 rounded-lg text-xs font-black shadow-lg hover:bg-indigo-700 transition-all duration-300 hover:scale-[1.02]">Link</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+
                 <!-- Active Tasks & Audits -->
                 <div class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden flex flex-col hover:shadow-md transition-all duration-300 group">
                     <div class="p-5 border-b border-slate-100 bg-slate-50/50">
@@ -169,6 +163,272 @@
                     <div id="prof-active-tasks" class="p-6 space-y-4 max-h-[400px] overflow-y-auto bg-white"></div>
                 </div>
             </div>
+        </div>
+    </div>
+</div>
+
+<!-- ==================== COMPLIANCE PERIOD START MODAL ==================== -->
+<div id="complianceStartPeriodModal" class="hidden fixed inset-0 z-[120] bg-slate-900/40 backdrop-blur-md flex items-center justify-center p-4">
+    <div class="bg-white w-full max-w-md rounded-[2rem] shadow-[0_20px_50px_rgba(8,_112,_184,_0.15)] flex flex-col animate-scale-in overflow-hidden border border-slate-100">
+        <!-- Header -->
+        <div class="px-6 py-5 border-b border-slate-100 bg-gradient-to-r from-emerald-600 to-teal-600 text-white flex justify-between items-center">
+            <div>
+                <h3 id="start-modal-title" class="text-lg font-black tracking-tight">Enroll Compliance</h3>
+                <p class="text-[9px] font-bold text-emerald-100 uppercase tracking-widest mt-0.5">Specify starting period for this service</p>
+            </div>
+            <button onclick="document.getElementById('complianceStartPeriodModal').classList.add('hidden')" class="text-white/60 hover:text-white bg-white/10 hover:bg-white/20 rounded-full w-8 h-8 flex items-center justify-center transition">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+        </div>
+
+        <!-- Body -->
+        <div class="p-6 space-y-4">
+            <!-- Monthly Picker -->
+            <div id="start-monthly-picker" class="hidden space-y-3">
+                <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest">Select Starting Month & Year</label>
+                <div class="grid grid-cols-2 gap-3">
+                    <select id="start-month-select" class="w-full rounded-xl border border-slate-200 p-3 text-xs font-bold outline-none bg-slate-50 focus:ring-2 focus:ring-emerald-500 animate-none">
+                        <option value="01">January</option>
+                        <option value="02">February</option>
+                        <option value="03">March</option>
+                        <option value="04">April</option>
+                        <option value="05">May</option>
+                        <option value="06">June</option>
+                        <option value="07">July</option>
+                        <option value="08">August</option>
+                        <option value="09">September</option>
+                        <option value="10">October</option>
+                        <option value="11">November</option>
+                        <option value="12">December</option>
+                    </select>
+                    <select id="start-month-year-select" class="w-full rounded-xl border border-slate-200 p-3 text-xs font-bold outline-none bg-slate-50 focus:ring-2 focus:ring-emerald-500 animate-none">
+                        <option value="2024">2024</option>
+                        <option value="2025">2025</option>
+                        <option value="2026" selected>2026</option>
+                        <option value="2027">2027</option>
+                        <option value="2028">2028</option>
+                        <option value="2029">2029</option>
+                        <option value="2030">2030</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Quarterly Picker -->
+            <div id="start-quarterly-picker" class="hidden space-y-3">
+                <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest">Select Starting Quarter & FY</label>
+                <div class="grid grid-cols-2 gap-3">
+                    <select id="start-quarter-select" class="w-full rounded-xl border border-slate-200 p-3 text-xs font-bold outline-none bg-slate-50 focus:ring-2 focus:ring-emerald-500 animate-none">
+                        <option value="Q1">Q1 (Apr-Jun)</option>
+                        <option value="Q2">Q2 (Jul-Sep)</option>
+                        <option value="Q3">Q3 (Oct-Dec)</option>
+                        <option value="Q4">Q4 (Jan-Mar)</option>
+                    </select>
+                    <select id="start-quarter-year-select" class="w-full rounded-xl border border-slate-200 p-3 text-xs font-bold outline-none bg-slate-50 focus:ring-2 focus:ring-emerald-500 animate-none">
+                        <option value="2024-25">FY 2024-25</option>
+                        <option value="2025-26">FY 2025-26</option>
+                        <option value="2026-27" selected>FY 2026-27</option>
+                        <option value="2027-28">FY 2027-28</option>
+                        <option value="2028-29">FY 2028-29</option>
+                        <option value="2029-30">FY 2029-30</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Yearly Picker -->
+            <div id="start-yearly-picker" class="hidden space-y-3">
+                <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest">Select Starting Financial Year</label>
+                <select id="start-year-select" class="w-full rounded-xl border border-slate-200 p-3 text-xs font-bold outline-none bg-slate-50 focus:ring-2 focus:ring-emerald-500 animate-none">
+                    <option value="FY_2024_25">FY 2024-25</option>
+                    <option value="FY_2025_26">FY 2025-26</option>
+                    <option value="FY_2026_27" selected>FY 2026-27</option>
+                    <option value="FY_2027_28">FY 2027-28</option>
+                    <option value="FY_2028_29">FY 2028-29</option>
+                    <option value="FY_2029_30">FY 2029-30</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="px-6 py-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-2">
+            <button onclick="document.getElementById('complianceStartPeriodModal').classList.add('hidden')" class="px-4 py-2.5 text-xs font-black uppercase text-slate-400 hover:text-slate-600 transition">Cancel</button>
+            <button onclick="submitComplianceStartPeriod()" class="px-6 py-2.5 text-xs font-black bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 shadow-lg shadow-emerald-100 transition active:scale-95">Confirm Enrollment</button>
+        </div>
+    </div>
+</div>
+
+<!-- ==================== COMPLIANCE PERIOD END MODAL ==================== -->
+<div id="complianceEndPeriodModal" class="hidden fixed inset-0 z-[120] bg-slate-900/40 backdrop-blur-md flex items-center justify-center p-4">
+    <div class="bg-white w-full max-w-md rounded-[2rem] shadow-[0_20px_50px_rgba(8,_112,_184,_0.15)] flex flex-col animate-scale-in overflow-hidden border border-slate-100">
+        <!-- Header -->
+        <div class="px-6 py-5 border-b border-slate-100 bg-gradient-to-r from-red-600 to-rose-600 text-white flex justify-between items-center">
+            <div>
+                <h3 id="end-modal-title" class="text-lg font-black tracking-tight">Remove Compliance</h3>
+                <p class="text-[9px] font-bold text-red-100 uppercase tracking-widest mt-0.5">Choose removal reason and period</p>
+            </div>
+            <button onclick="document.getElementById('complianceEndPeriodModal').classList.add('hidden')" class="text-white/60 hover:text-white bg-white/10 hover:bg-white/20 rounded-full w-8 h-8 flex items-center justify-center transition">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+        </div>
+
+        <!-- Body -->
+        <div class="p-6">
+            <!-- Initial Choice screen -->
+            <div id="end-period-choices" class="flex flex-col gap-3">
+                <p class="text-xs text-slate-500 font-medium mb-2 leading-relaxed">Why are you removing this compliance? Please choose an option below to ensure client directory lists remain accurate:</p>
+                <button onclick="submitComplianceRemovedByMistake()" class="w-full text-left p-4 rounded-2xl border border-slate-200 hover:border-red-500 hover:bg-red-50/30 transition flex items-center gap-4 group">
+                    <div class="w-10 h-10 rounded-xl bg-red-50 text-red-600 flex items-center justify-center text-sm group-hover:scale-105 transition"><i class="fa-solid fa-circle-exclamation"></i></div>
+                    <div>
+                        <span class="block text-xs font-black text-slate-800">Added by Mistake</span>
+                        <span class="block text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">Delete completely from all pages</span>
+                    </div>
+                </button>
+                <button onclick="showEndPeriodPicker()" class="w-full text-left p-4 rounded-2xl border border-slate-200 hover:border-indigo-500 hover:bg-indigo-50/30 transition flex items-center gap-4 group">
+                    <div class="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-sm group-hover:scale-105 transition"><i class="fa-solid fa-calendar-xmark"></i></div>
+                    <div>
+                        <span class="block text-xs font-black text-slate-800">Has End Period</span>
+                        <span class="block text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">Keep logs but hide beyond end period</span>
+                    </div>
+                </button>
+            </div>
+
+            <!-- Date Selectors -->
+            <div id="end-period-picker-container" class="hidden space-y-4">
+                <!-- Monthly Picker -->
+                <div id="end-monthly-picker" class="hidden space-y-3">
+                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest">Select Ending Month & Year</label>
+                    <div class="grid grid-cols-2 gap-3">
+                        <select id="end-month-select" class="w-full rounded-xl border border-slate-200 p-3 text-xs font-bold outline-none bg-slate-50 focus:ring-2 focus:ring-red-500 animate-none">
+                            <option value="01">January</option>
+                            <option value="02">February</option>
+                            <option value="03">March</option>
+                            <option value="04">April</option>
+                            <option value="05">May</option>
+                            <option value="06">June</option>
+                            <option value="07">July</option>
+                            <option value="08">August</option>
+                            <option value="09">September</option>
+                            <option value="10">October</option>
+                            <option value="11">November</option>
+                            <option value="12">December</option>
+                        </select>
+                        <select id="end-month-year-select" class="w-full rounded-xl border border-slate-200 p-3 text-xs font-bold outline-none bg-slate-50 focus:ring-2 focus:ring-red-500 animate-none">
+                            <option value="2024">2024</option>
+                            <option value="2025">2025</option>
+                            <option value="2026" selected>2026</option>
+                            <option value="2027">2027</option>
+                            <option value="2028">2028</option>
+                            <option value="2029">2029</option>
+                            <option value="2030">2030</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Quarterly Picker -->
+                <div id="end-quarterly-picker" class="hidden space-y-3">
+                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest">Select Ending Quarter & FY</label>
+                    <div class="grid grid-cols-2 gap-3">
+                        <select id="end-quarter-select" class="w-full rounded-xl border border-slate-200 p-3 text-xs font-bold outline-none bg-slate-50 focus:ring-2 focus:ring-red-500 animate-none">
+                            <option value="Q1">Q1 (Apr-Jun)</option>
+                            <option value="Q2">Q2 (Jul-Sep)</option>
+                            <option value="Q3">Q3 (Oct-Dec)</option>
+                            <option value="Q4">Q4 (Jan-Mar)</option>
+                        </select>
+                        <select id="end-quarter-year-select" class="w-full rounded-xl border border-slate-200 p-3 text-xs font-bold outline-none bg-slate-50 focus:ring-2 focus:ring-red-500 animate-none">
+                            <option value="2024-25">FY 2024-25</option>
+                            <option value="2025-26">FY 2025-26</option>
+                            <option value="2026-27" selected>FY 2026-27</option>
+                            <option value="2027-28">FY 2027-28</option>
+                            <option value="2028-29">FY 2028-29</option>
+                            <option value="2029-30">FY 2029-30</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Yearly Picker -->
+                <div id="end-yearly-picker" class="hidden space-y-3">
+                    <label class="block text-[10px] font-black text-slate-400 uppercase tracking-widest">Select Ending Financial Year</label>
+                    <select id="end-year-select" class="w-full rounded-xl border border-slate-200 p-3 text-xs font-bold outline-none bg-slate-50 focus:ring-2 focus:ring-red-500 animate-none">
+                        <option value="FY_2024_25">FY 2024-25</option>
+                        <option value="FY_2025_26">FY 2025-26</option>
+                        <option value="FY_2026_27" selected>FY 2026-27</option>
+                        <option value="FY_2027_28">FY 2027-28</option>
+                        <option value="FY_2028_29">FY 2028-29</option>
+                        <option value="FY_2029_30">FY 2029-30</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="px-6 py-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-2">
+            <button onclick="document.getElementById('complianceEndPeriodModal').classList.add('hidden')" class="px-4 py-2.5 text-xs font-black uppercase text-slate-400 hover:text-slate-600 transition">Cancel</button>
+            <button id="end-submit-btn" onclick="submitComplianceEndPeriod()" class="hidden px-6 py-2.5 text-xs font-black bg-red-600 text-white rounded-xl hover:bg-red-700 shadow-lg shadow-red-100 transition active:scale-95">Set End Date</button>
+        </div>
+    </div>
+</div>
+
+<!-- ==================== CLIENT DUPLICATE PAN WARNING MODAL ==================== -->
+<div id="clientWarningModal" class="hidden fixed inset-0 z-[120] bg-slate-900/40 backdrop-blur-md flex items-center justify-center p-4">
+    <div class="bg-white w-full max-w-md rounded-[2rem] shadow-[0_20px_50px_rgba(8,_112,_184,_0.15)] flex flex-col animate-scale-in overflow-hidden border border-slate-100">
+        <!-- Header -->
+        <div class="px-6 py-5 border-b border-slate-100 bg-gradient-to-r from-amber-500 to-orange-600 text-white flex justify-between items-center">
+            <div>
+                <h3 class="text-lg font-black tracking-tight">Client PAN Already Exists</h3>
+                <p class="text-[9px] font-bold text-amber-100 uppercase tracking-widest mt-0.5">Warning: Duplicate PAN detected</p>
+            </div>
+            <button onclick="closeClientWarningModal()" class="text-white/60 hover:text-white bg-white/10 hover:bg-white/20 rounded-full w-8 h-8 flex items-center justify-center transition">
+                <i class="fa-solid fa-xmark"></i>
+            </button>
+        </div>
+
+        <!-- Body -->
+        <div class="p-6 space-y-4">
+            <div class="flex items-start gap-3">
+                <div class="w-12 h-12 rounded-2xl bg-amber-50 text-amber-500 flex items-center justify-center text-xl shrink-0">
+                    <i class="fa-solid fa-triangle-exclamation"></i>
+                </div>
+                <div class="flex-1 min-w-0">
+                    <p class="text-xs text-slate-600 font-bold leading-relaxed">
+                        A client with PAN <span id="warning-modal-pan" class="text-slate-800 font-black"></span> already exists under the name(s):
+                    </p>
+                    <p id="warning-modal-names" class="text-xs text-slate-800 font-black mt-1 bg-slate-50 border border-slate-100 p-3 rounded-xl shadow-inner break-words"></p>
+                    <p class="text-xs text-slate-600 font-medium mt-3 leading-relaxed">
+                        Since the proposed GSTIN is different, you can still add this client. Do you want to proceed?
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="px-6 py-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-2">
+            <button onclick="closeClientWarningModal()" class="px-4 py-2.5 text-xs font-black uppercase text-slate-400 hover:text-slate-600 transition">Cancel</button>
+            <button id="warning-proceed-btn" class="px-6 py-2.5 text-xs font-black bg-amber-600 text-white rounded-xl hover:bg-amber-700 shadow-lg shadow-amber-100 transition active:scale-95">Proceed</button>
+        </div>
+    </div>
+</div>
+
+<!-- ==================== STERN WARNING POPUP MODAL (PAN NOT AVAILABLE) ==================== -->
+<div id="panNotAvailableWarningModal" class="hidden fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[150] flex items-center justify-center p-4">
+    <div class="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl border border-slate-100 flex flex-col items-center text-center animate-in fade-in zoom-in duration-200">
+        <div class="w-16 h-16 bg-rose-50 text-rose-600 rounded-2xl flex items-center justify-center mb-6">
+            <i class="fa-solid fa-triangle-exclamation text-3xl"></i>
+        </div>
+        <h3 class="text-xl font-black text-rose-600 mb-2 font-sans tracking-tight">STERN WARNING</h3>
+        <p class="text-slate-800 text-xs font-black mb-4 uppercase tracking-widest text-rose-700 bg-rose-50 border border-rose-100 px-3 py-1 rounded-lg">High Duplication Risk</p>
+        
+        <p class="text-slate-500 text-xs font-semibold leading-relaxed mb-6">
+            You are generating a placeholder PAN for this client. <strong>Placeholder PANs create a high risk of duplicate client records</strong> in the system.
+            <br><br>
+            Please confirm that this is genuinely a party whose actual PAN is completely unavailable.
+        </p>
+
+        <div class="flex gap-3 w-full">
+            <button onclick="cancelPanNotAvailable()" class="flex-1 py-3.5 rounded-xl font-black text-xs uppercase tracking-widest text-slate-500 bg-slate-100 hover:bg-slate-200 transition-all active:scale-95 border border-slate-200">
+                No, Go Back
+            </button>
+            <button onclick="confirmPanNotAvailable()" class="flex-1 py-3.5 rounded-xl font-black text-xs uppercase tracking-widest text-white bg-rose-600 hover:bg-rose-700 shadow-lg shadow-rose-200 transition-all active:scale-95">
+                Yes, I Confirm
+            </button>
         </div>
     </div>
 </div>

@@ -6,6 +6,7 @@
         </div>
         <div class="p-6 space-y-4">
             <input type="hidden" id="editBillId">
+            <input type="hidden" id="billMode" value="bill">
             <div id="proposedBillNumberContainer" class="hidden bg-indigo-50 border border-indigo-100 rounded-lg p-3 flex justify-between items-center mb-2">
                 <span class="text-xs font-bold text-indigo-500 uppercase tracking-widest">Proposed Bill No.</span>
                 <span id="proposedBillNumberDisplay" class="text-lg font-black text-indigo-700"></span>
@@ -56,8 +57,8 @@
                 <div class="flex items-center gap-6">
                     <img id="inv-prev-logo" src="" class="hidden w-24 h-24 object-contain rounded-lg border border-slate-100 bg-white p-1">
                     <div>
-                        <h1 class="text-3xl font-black text-indigo-700 tracking-wider uppercase mb-3">Invoice</h1>
-                        <p class="text-gray-500 font-medium">Invoice No: <span class="text-gray-800 font-bold" id="inv-prev-no">#---</span></p>
+                        <h1 id="inv-prev-title-text" class="text-3xl font-black text-indigo-700 tracking-wider uppercase mb-3">Invoice</h1>
+                        <p class="text-gray-500 font-medium"><span id="inv-prev-no-label">Invoice No</span>: <span class="text-gray-800 font-bold" id="inv-prev-no">#---</span></p>
                         <p class="text-gray-500 font-medium">Date: <span class="text-gray-800 font-bold" id="inv-prev-date">--/--/----</span></p>
                     </div>
                 </div>
@@ -66,13 +67,22 @@
                     <p class="text-sm text-gray-500 mt-2 font-medium leading-relaxed" id="inv-prev-address">Vistaar, 2nd Floor, 366, Rachna Nagar<br>Bhopal - 462023</p>
                     <p id="inv-prev-email" class="text-sm text-gray-500 mt-1 font-medium"><i class="fa-solid fa-envelope mr-1"></i> <span>multifruitservices@gmail.com</span></p>
                     <p id="inv-prev-phone" class="text-sm text-gray-500 mt-1 font-medium"><i class="fa-solid fa-phone mr-1"></i> <span>9977702211</span></p>
-                    <p class="text-sm font-bold text-gray-700 mt-2 bg-gray-50 inline-block px-2 py-1 rounded" id="inv-prev-firm-gst-box">GSTIN: <span id="inv-prev-gst"></span></p>
+                    <div class="flex flex-wrap justify-end gap-2 mt-2">
+                        <p class="text-sm font-bold text-gray-700 bg-gray-50 inline-block px-2 py-1 rounded" id="inv-prev-firm-gst-box">GSTIN: <span id="inv-prev-gst"></span></p>
+                        <p class="text-sm font-bold text-gray-700 bg-gray-50 inline-block px-2 py-1 rounded" id="inv-prev-firm-udyam-box">UDYAM: <span id="inv-prev-udyam"></span></p>
+                    </div>
                 </div>
             </div>
 
-            <div class="mb-10 bg-slate-50 p-6 rounded-xl border border-slate-100 relative z-0">
-                <h3 class="text-xs font-bold text-indigo-500 uppercase tracking-widest mb-2">Billed To</h3>
-                <h4 class="text-xl font-bold text-gray-900" id="inv-prev-client">Client Name</h4>
+            <div class="mb-10 bg-slate-50 p-6 rounded-xl border border-slate-100 relative z-0 flex justify-between items-center">
+                <div>
+                    <h3 class="text-xs font-bold text-indigo-500 uppercase tracking-widest mb-2">Billed To</h3>
+                    <h4 class="text-xl font-bold text-gray-900" id="inv-prev-client">Client Name</h4>
+                </div>
+                <div id="inv-prev-client-gst-box" class="hidden text-right">
+                    <p class="text-xs font-bold text-slate-400 uppercase tracking-widest mb-1">GSTIN</p>
+                    <p class="text-sm font-bold text-slate-700 font-mono" id="inv-prev-client-gst">--</p>
+                </div>
             </div>
 
             <table class="w-full text-left mb-10 border-collapse relative z-0">
@@ -87,10 +97,26 @@
                         <td class="py-6 px-6 text-base text-gray-800 font-medium" id="inv-prev-service">Service Description</td>
                         <td class="py-6 px-6 text-base text-gray-800 font-bold text-right" id="inv-prev-amt">0.00</td>
                     </tr>
+                    <tr id="inv-prev-cgst-row" class="hidden border-b border-gray-100 text-sm text-gray-500 bg-slate-50/30">
+                        <td class="py-3 px-6 text-right font-medium">CGST @ 9%</td>
+                        <td class="py-3 px-6 text-right font-bold text-gray-800" id="inv-prev-cgst">0.00</td>
+                    </tr>
+                    <tr id="inv-prev-sgst-row" class="hidden border-b border-gray-100 text-sm text-gray-500 bg-slate-50/30">
+                        <td class="py-3 px-6 text-right font-medium">SGST @ 9%</td>
+                        <td class="py-3 px-6 text-right font-bold text-gray-800" id="inv-prev-sgst">0.00</td>
+                    </tr>
+                    <tr id="inv-prev-igst-row" class="hidden border-b border-gray-100 text-sm text-gray-500 bg-slate-50/30">
+                        <td class="py-3 px-6 text-right font-medium">IGST @ 18%</td>
+                        <td class="py-3 px-6 text-right font-bold text-gray-800" id="inv-prev-igst">0.00</td>
+                    </tr>
+                    <tr id="inv-prev-roundoff-row" class="hidden border-b border-gray-100 text-sm text-gray-500 bg-slate-50/30">
+                        <td class="py-3 px-6 text-right font-medium">Round Off</td>
+                        <td class="py-3 px-6 text-right font-bold text-gray-800" id="inv-prev-roundoff">0.00</td>
+                    </tr>
                 </tbody>
                 <tfoot>
                     <tr>
-                        <td class="py-6 px-6 text-right text-sm font-bold text-gray-500 uppercase tracking-wider">Total Due</td>
+                        <td class="py-6 px-6 text-right text-sm font-bold text-gray-500 uppercase tracking-wider" id="inv-prev-total-label">Total Due</td>
                         <td class="py-6 px-6 text-right text-2xl font-black text-indigo-700" id="inv-prev-total">₹0.00</td>
                     </tr>
                 </tfoot>

@@ -1,0 +1,1294 @@
+<script>
+    // ==========================================
+    // MODULE: PROFESSIONAL TAX CENTER
+    // ==========================================
+
+    function safeSetSessionStorage(key, val) {
+        try { sessionStorage.setItem(key, val); } catch (e) { console.warn(e); }
+    }
+    function safeGetSessionStorage(key) {
+        try { return sessionStorage.getItem(key); } catch (e) { return null; }
+    }
+
+    window.ptIsLoading = false;
+
+    function setupPtScrollListener() {
+        const viewContainer = document.getElementById('view-professional-tax');
+        if (viewContainer && !viewContainer.dataset.scrollListenerAttached) {
+            viewContainer.addEventListener('scroll', () => {
+                if (window.ptIsLoading) return;
+                safeSetSessionStorage('pt_scroll_top', viewContainer.scrollTop);
+            });
+            viewContainer.dataset.scrollListenerAttached = 'true';
+        }
+        const tableContainer = document.getElementById('pt-table-container');
+        if (tableContainer && !tableContainer.dataset.scrollListenerAttached) {
+            tableContainer.addEventListener('scroll', () => {
+                if (window.ptIsLoading) return;
+                safeSetSessionStorage('pt_table_scroll_top', tableContainer.scrollTop);
+            });
+            tableContainer.dataset.scrollListenerAttached = 'true';
+        }
+    }
+
+    let globalPTClients = [];
+    let globalPTTrackingMap = {}; // Maps clientId_period -> {challanStatus, returnStatus, billStatus, filingDate, isCall, advance}
+    let ptSortCol = 'display_name';
+    let ptSortAsc = true;
+
+    function populatePTMonths() {
+        const select = document.getElementById('ptMonthFilter');
+        if (!select || select.options.length > 0) return; 
+
+        const today = new Date();
+        const currentYear = today.getFullYear();
+        const currentMonth = today.getMonth(); // 0-indexed: 0 = Jan, 3 = Apr
+
+        // If today is on or after April 1st, the current FY starts at currentYear.
+        // Otherwise, it starts at currentYear - 1.
+        let startingFYStart = (currentMonth >= 3) ? currentYear : (currentYear - 1);
+
+        let optionsHtml = '';
+        // Generate current/future and past financial years (e.g. 5 options)
+        for (let i = 0; i < 5; i++) {
+            const startYear = startingFYStart - i;
+            const endYearShort = (startYear + 1).toString().slice(-2);
+            const val = `FY_${startYear}_${endYearShort}`;
+            const display = `FY ${startYear}-${endYearShort}`;
+
+            optionsHtml += `<option value="${val}">${display}</option>`;
+        }
+        select.innerHTML = optionsHtml;
+    }
+
+    async function loadPTCenterData(forceRefresh = false) {
+        if (window.ptIsLoading) return;
+        window.ptIsLoading = true;
+        
+        const tbody = document.getElementById('pt-table-body');
+        if (!tbody) {
+            window.ptIsLoading = false;
+            return;
+        }
+        
+        window.lastPtScrollPos = safeGetSessionStorage('pt_scroll_top') ? parseInt(safeGetSessionStorage('pt_scroll_top'), 10) : 0;
+        window.lastPtTableScrollPos = safeGetSessionStorage('pt_table_scroll_top') ? parseInt(safeGetSessionStorage('pt_table_scroll_top'), 10) : 0;
+        
+        tbody.innerHTML = '<tr><td colspan="8" class="text-center py-8 text-gray-500"><i class="fa-solid fa-spinner fa-spin text-2xl mb-2"></i><br>Loading Professional Tax Data...</td></tr>';
+        
+        try {
+            populatePTMonths();
+            
+            const needsCacheRefresh = forceRefresh || !window.globalAllClientsList || window.globalAllClientsList.length === 0;
+            if (needsCacheRefresh) {
+                await Promise.all([
+                    refreshGlobalCache(),
+                    fetchTeamMembers()
+                ]);
+            } else {
+                await fetchTeamMembers();
+            }
+
+            const selectEl = document.getElementById('ptMonthFilter');
+            const selectedPeriod = selectEl ? selectEl.value : '';
+            if (!selectedPeriod) throw new Error("Could not determine the selected month.");
+
+            const hostClientId = globalClientsList.find(c => c.is_active !== false)?.client_id;
+            
+            // Execute all Professional Tax database calls in a parallel thread!
+            const [
+                visSettingsRes,
+                ptRateLogsRes,
+                ptInvoicesRes,
+                ptLogsRes
+            ] = await Promise.all([
+                supabaseClient.from('page_visibility_settings').select('enrolled_services').eq('page_id', 'view-professional-tax').maybeSingle(),
+                fetchAllRows((from, to) => supabaseClient.from('task_logs').select('note').like('note', `[PAGE_RATE] view-professional-tax%`).order('timestamp', { ascending: false }).order('log_id', { ascending: false }).range(from, to)),
+                supabaseClient.from('invoices').select('client_id, service_name, status').like('service_name', 'Professional Tax%'),
+                fetchAllRows((from, to) => supabaseClient.from('task_logs').select('log_id, note, timestamp').or('note.ilike.%[PT_TRACKING]%,note.ilike.%[PT_LOG]%,note.ilike.%[PT Stuck]%,note.ilike.%[PT Unstuck]%,note.ilike.%[PT_REMARK]%').order('timestamp', { ascending: true }).order('log_id', { ascending: true }).range(from, to))
+            ]);
+
+            // 1. Set allowed services
+            const visSettings = visSettingsRes.data;
+            const allowedServices = (visSettings && visSettings.enrolled_services) ? visSettings.enrolled_services : [];
+            window.globalPTAllowedServices = allowedServices;
+
+            globalPTClients = globalClientsList.filter(c => {
+                return allowedServices.some(as => window.isClientVisibleForPeriod(c, as, selectedPeriod, 'yearly'));
+            });
+
+            // 3. Process rates
+            const ptRateLogs = ptRateLogsRes.data;
+            window.globalPTRatesMap = {};
+            if (ptRateLogs) {
+                ptRateLogs.forEach(log => {
+                    const parts = log.note.split('|');
+                    if (parts.length >= 3) {
+                        const clientId = parts[1];
+                        const rate = parts[2];
+                        if (window.globalPTRatesMap[clientId] === undefined) {
+                            window.globalPTRatesMap[clientId] = rate;
+                        }
+                    }
+                });
+            }
+
+            // 4. Process invoices
+            const ptInvoices = ptInvoicesRes.data;
+            window.globalPTBilledMap = {};
+            const selectedPeriodDisplay = selectedPeriod.replace('FY_', 'FY '); // e.g. "FY 2026-27"
+            if (ptInvoices) {
+                ptInvoices.forEach(inv => {
+                    if (inv.status === 'Cancelled') return;
+                    if (inv.service_name && inv.service_name.includes("Professional Tax Fees - ")) {
+                        if (inv.service_name.includes(selectedPeriodDisplay)) {
+                            window.globalPTBilledMap[inv.client_id] = true;
+                        }
+                    }
+                });
+            }
+
+            // 5. Process tracking logs
+            globalPTTrackingMap = {};
+            window.globalPTStuckMap = {};
+            window.globalPTLatestCommentMap = {};
+            if (ptLogsRes.error) throw ptLogsRes.error;
+            const ptLogs = ptLogsRes.data;
+            if (ptLogs) {
+                    ptLogs.forEach(log => {
+                        if (log.note.startsWith('[PT_TRACKING]')) {
+                            // Format: [PT_TRACKING] clientId|period|challanStatus|returnStatus|billStatus|filingDate|isCall|advance
+                            const payload = log.note.replace('[PT_TRACKING] ', '').trim();
+                            const parts = payload.split('|');
+                            if (parts.length >= 6) {
+                                const cId = parts[0];
+                                const period = parts[1];
+                                const key = `${cId}_${period}`;
+                                const isBilledInDb = window.globalPTBilledMap && window.globalPTBilledMap[cId];
+                                globalPTTrackingMap[key] = {
+                                    challanStatus: parts[2] || 'Pending',
+                                    returnStatus: parts[3] || 'Pending',
+                                    billStatus: isBilledInDb ? 'Billed' : (parts[4] || 'Unbilled'),
+                                    filingDate: parts[5] || '',
+                                    isCall: parts[6] || 'Pending',
+                                    advance: parts[7] || 'Pending'
+                                };
+                            }
+                        } else if (log.note.startsWith('[PT_LOG]')) {
+                            // Format: [PT_LOG] clientId|period|columnKey|statusValue|textRemark|filingDate
+                            const payload = log.note.replace('[PT_LOG] ', '').trim();
+                            const parts = payload.split('|');
+                            if (parts.length >= 4) {
+                                const cId = parts[0];
+                                const period = parts[1];
+                                const columnKey = parts[2];
+                                const statusValue = parts[3];
+                                const textRemark = parts[4] || '';
+                                const filingDate = parts[5] || '';
+                                const key = `${cId}_${period}`;
+                                
+                                const isBilledInDb = window.globalPTBilledMap && window.globalPTBilledMap[cId];
+                                if (!globalPTTrackingMap[key]) {
+                                    globalPTTrackingMap[key] = {
+                                        challanStatus: 'Pending',
+                                        returnStatus: 'Pending',
+                                        billStatus: isBilledInDb ? 'Billed' : 'Unbilled',
+                                        filingDate: '',
+                                        isCall: 'Pending',
+                                        advance: 'Pending'
+                                    };
+                                }
+                                globalPTTrackingMap[key][columnKey] = statusValue;
+                                if (isBilledInDb) {
+                                    globalPTTrackingMap[key].billStatus = 'Billed';
+                                }
+                                if (filingDate && (columnKey === 'challanStatus' || columnKey === 'returnStatus' || columnKey === 'filingDate')) {
+                                    globalPTTrackingMap[key].filingDate = filingDate;
+                                }
+                                if (columnKey === 'general_remark') {
+                                    if (textRemark && textRemark !== 'Completed' && textRemark !== 'Reverted to Pending') {
+                                        window.globalPTLatestCommentMap[cId] = textRemark;
+                                    }
+                                }
+                            }
+                        } else if (log.note.startsWith('[PT_REMARK]')) {
+                            const payload = log.note.replace('[PT_REMARK] ', '').trim();
+                            const parts = payload.split('|');
+                            if (parts.length >= 3) {
+                                const cId = parts[0];
+                                const textRemark = parts[2] || '';
+                                if (textRemark) {
+                                    window.globalPTLatestCommentMap[cId] = textRemark;
+                                }
+                            }
+                        } else if (log.note.startsWith('[PT Stuck]')) {
+                            const payload = log.note.replace('[PT Stuck] ', '').trim();
+                            const parts = payload.split('|');
+                            if (parts.length >= 2) {
+                                const cId = parts[0];
+                                window.globalPTStuckMap[cId] = true;
+                            }
+                        } else if (log.note.startsWith('[PT Unstuck]')) {
+                            const payload = log.note.replace('[PT Unstuck] ', '').trim();
+                            const parts = payload.split('|');
+                            if (parts.length >= 2) {
+                                const cId = parts[0];
+                                window.globalPTStuckMap[cId] = false;
+                            }
+                        }
+                    });
+                }
+
+                renderFilteredPTTable();
+
+        } catch (err) {
+            console.error("PT load error:", err);
+            tbody.innerHTML = `<tr><td colspan="8" class="text-center py-8 text-rose-500 font-bold"><i class="fa-solid fa-triangle-exclamation text-2xl mb-2"></i><br>Error: ${err.message}</td></tr>`;
+        }
+    }
+
+    function renderFilteredPTTable() {
+        const tbody = document.getElementById('pt-table-body');
+        if (!tbody) return;
+
+        try {
+            const assignFilter = document.getElementById('ptAssignFilter')?.value || 'all';
+            const searchInput = document.getElementById('ptSearchInput')?.value.trim().toLowerCase() || '';
+            const selectEl = document.getElementById('ptMonthFilter');
+            const selectedPeriod = selectEl ? selectEl.value : '';
+
+            // 1. Filter clients
+            let filtered = globalPTClients || [];
+
+            if (assignFilter === 'mine') {
+                const allowedServices = (window.globalPTAllowedServices && window.globalPTAllowedServices.length > 0)
+                    ? window.globalPTAllowedServices
+                    : ['PT', 'Professional Tax', 'PF & ESIC'];
+                const myClientIds = (window.globalAssignmentsList || [])
+                    .filter(a => 
+                        a.maker_id === currentUser.id &&
+                        a.service_type &&
+                        allowedServices.some(as => as && typeof as === 'string' && a.service_type.toLowerCase() === as.toLowerCase())
+                    )
+                    .map(a => a.client_id);
+                filtered = filtered.filter(c => myClientIds.includes(c.client_id));
+            }
+
+            if (searchInput) {
+                filtered = filtered.filter(c => (c.display_name || '').toLowerCase().includes(searchInput));
+            }
+
+            // 2. Prepare visual details for sorting
+            const processedList = filtered.map(c => {
+                const key = `${c.client_id}_${selectedPeriod}`;
+                const track = globalPTTrackingMap[key] || {
+                    challanStatus: 'Pending',
+                    returnStatus: 'Pending',
+                    billStatus: 'Unbilled',
+                    filingDate: '',
+                    isCall: 'Pending',
+                    advance: 'Pending'
+                };
+
+                // Get assignee maker id & name
+                let assigneeId = '';
+                let assigneeName = 'Unassigned';
+                const allowedServices = (window.globalPTAllowedServices && window.globalPTAllowedServices.length > 0)
+                    ? window.globalPTAllowedServices
+                    : ['PT', 'Professional Tax', 'PF & ESIC'];
+                const assignment = (window.globalAssignmentsList || []).find(a => 
+                    a.client_id === c.client_id && 
+                    a.service_type && 
+                    allowedServices.some(as => as && typeof as === 'string' && a.service_type.toLowerCase() === as.toLowerCase())
+                );
+                if (assignment && assignment.maker_id) {
+                    assigneeId = assignment.maker_id;
+                    const user = (window.globalTeamMembers || globalTeamMembers || []).find(u => u.id === assignment.maker_id);
+                    if (user) assigneeName = user.name;
+                }
+
+                return {
+                    client: c,
+                    display_name: c.display_name || 'Unnamed Client',
+                    challanStatus: track.challanStatus,
+                    returnStatus: track.returnStatus,
+                    billStatus: track.billStatus,
+                    filingDate: track.filingDate,
+                    isCall: track.isCall,
+                    advance: track.advance,
+                    assigneeId: assigneeId,
+                    assignee: assigneeName,
+                    key: key
+                };
+            });
+
+            // 3. Apply sorting
+            processedList.sort((a, b) => {
+                let valA = a[ptSortCol];
+                let valB = b[ptSortCol];
+
+                if (typeof valA === 'string') {
+                    return ptSortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
+                }
+                return 0;
+            });
+
+            // 4. Compute metrics
+            let totalCount = processedList.length;
+            let activeCount = 0;
+            let pendingChallan = 0;
+            let pendingReturn = 0;
+            let completedFilings = 0;
+
+            processedList.forEach(item => {
+                const isStuck = !!(window.globalPTStuckMap && window.globalPTStuckMap[item.client.client_id]);
+                if (!isStuck) {
+                    activeCount++;
+                    if (item.challanStatus !== 'Done') pendingChallan++;
+                    if (item.returnStatus !== 'Done') pendingReturn++;
+                    if (item.challanStatus === 'Done' && item.returnStatus === 'Done') completedFilings++;
+                }
+            });
+
+            const totalCountEl = document.getElementById('pt-total-count');
+            if (totalCountEl) totalCountEl.innerText = activeCount;
+            const pendingChallanEl = document.getElementById('pt-pending-challan-count');
+            if (pendingChallanEl) pendingChallanEl.innerText = pendingChallan;
+            const pendingReturnEl = document.getElementById('pt-pending-return-count');
+            if (pendingReturnEl) pendingReturnEl.innerText = pendingReturn;
+            const completedFilingsEl = document.getElementById('pt-completed-filings-count');
+            if (completedFilingsEl) completedFilingsEl.innerText = completedFilings;
+
+            // 5. Render HTML
+            tbody.innerHTML = '';
+            if (processedList.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center py-8 text-slate-400 italic">No clients found matching the criteria.</td></tr>';
+                return;
+            }
+
+            processedList.forEach((item, index) => {
+                const c = item.client;
+                const displayName = item.display_name;
+                const safeName = displayName.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+
+                // Assignee user tag tag beside client name same as GST center
+                const assigneeBadge = item.assignee !== 'Unassigned' ? 
+                    `<div class="px-1.5 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded text-[9px] font-bold uppercase tracking-wider inline-flex items-center leading-none"><i class="fa-solid fa-user-tie mr-1"></i>${item.assignee}</div>` : '';
+
+                const isStuck = !!(window.globalPTStuckMap && window.globalPTStuckMap[c.client_id]);
+                const stuckBadge = isStuck 
+                    ? `<div class="px-1.5 py-0.5 bg-rose-50 text-rose-700 border border-rose-100 rounded text-[9px] font-black uppercase tracking-wider inline-flex items-center gap-0.5"><i class="fa-solid fa-circle-exclamation scale-75"></i>STUCK</div>`
+                    : '';
+
+                // Premium Call column toggle
+                const callHtml = item.isCall === 'Done' ? 
+                    `<td class="px-1 py-3 text-center border-l border-gray-100"><button onclick="openPTDrawer('${c.client_id}', '${safeName}', 'isCall', 'Call / Contact', '${selectedPeriod}', true)" class="w-full h-8 flex items-center justify-center rounded hover:bg-emerald-50 transition cursor-pointer border border-transparent hover:border-emerald-200"><div class="w-6 h-6 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center shadow-sm border border-emerald-200"><i class="fa-solid fa-check text-xs"></i></div></button></td>` : 
+                    `<td class="px-1 py-3 text-center border-l border-gray-100"><button onclick="openPTDrawer('${c.client_id}', '${safeName}', 'isCall', 'Call / Contact', '${selectedPeriod}', false)" class="w-full h-8 rounded hover:bg-indigo-50 text-gray-300 hover:text-indigo-400 transition flex items-center justify-center border border-transparent hover:border-indigo-200"><i class="fa-solid fa-check text-sm"></i></button></td>`;
+
+                // Premium Advance column drawer concept
+                const advanceHtml = item.advance === 'Received' ? 
+                    `<td class="px-1 py-3 text-center border-l border-gray-100"><button onclick="openPTDrawer('${c.client_id}', '${safeName}', 'advance', 'Advance Fee Received', '${selectedPeriod}', true)" class="w-full h-8 flex items-center justify-center rounded hover:bg-emerald-50 transition cursor-pointer border border-transparent hover:border-emerald-200"><span class="text-[10px] font-black text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-100 whitespace-nowrap">Received</span></button></td>` : 
+                    `<td class="px-1 py-3 text-center border-l border-gray-100"><button onclick="openPTDrawer('${c.client_id}', '${safeName}', 'advance', 'Advance Fee Received', '${selectedPeriod}', false)" class="w-full h-8 rounded hover:bg-indigo-50 text-gray-400 hover:text-indigo-600 transition flex items-center justify-center border border-transparent hover:border-indigo-200"><span class="text-[10px] font-bold text-slate-400">Pending</span></button></td>`;
+
+                // Premium Challan Status drawer concept
+                const challanHtml = item.challanStatus === 'Done' ? 
+                    `<td class="px-1 py-3 text-center border-l border-gray-100 bg-emerald-50/20"><button onclick="openPTDrawer('${c.client_id}', '${safeName}', 'challanStatus', 'Challan Status', '${selectedPeriod}', true)" class="w-full h-8 flex items-center justify-center rounded hover:bg-emerald-50 transition cursor-pointer border border-transparent hover:border-emerald-200"><div class="w-6 h-6 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center shadow-sm border border-emerald-200"><i class="fa-solid fa-check text-xs"></i></div></button></td>` : 
+                    `<td class="px-1 py-3 text-center border-l border-gray-100"><button onclick="openPTDrawer('${c.client_id}', '${safeName}', 'challanStatus', 'Challan Status', '${selectedPeriod}', false)" class="w-full h-8 rounded hover:bg-indigo-50 text-gray-300 hover:text-indigo-400 transition flex items-center justify-center border border-transparent hover:border-indigo-200"><i class="fa-solid fa-check text-sm"></i></button></td>`;
+
+                // Premium Return Status drawer concept
+                const returnHtml = item.returnStatus === 'Done' ? 
+                    `<td class="px-1 py-3 text-center border-l border-gray-100 bg-emerald-50/20"><button onclick="openPTDrawer('${c.client_id}', '${safeName}', 'returnStatus', 'Return Status', '${selectedPeriod}', true)" class="w-full h-8 flex items-center justify-center rounded hover:bg-emerald-50 transition cursor-pointer border border-transparent hover:border-emerald-200"><div class="w-6 h-6 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center shadow-sm border border-emerald-200"><i class="fa-solid fa-check text-xs"></i></div></button></td>` : 
+                    `<td class="px-1 py-3 text-center border-l border-gray-100"><button onclick="openPTDrawer('${c.client_id}', '${safeName}', 'returnStatus', 'Return Status', '${selectedPeriod}', false)" class="w-full h-8 rounded hover:bg-indigo-50 text-gray-300 hover:text-indigo-400 transition flex items-center justify-center border border-transparent hover:border-indigo-200"><i class="fa-solid fa-check text-sm"></i></button></td>`;
+
+                // Premium Bill column - mirrors GST Center exactly
+                let billHtml = '';
+                const isReturnComplete = item.returnStatus === 'Done';
+                const isBilled = item.billStatus === 'Billed';
+
+                if (isBilled) {
+                    billHtml = `<td class="px-1 py-3 text-center border-l border-gray-100 bg-emerald-50/5">
+                        <button onclick="promptCancelPTBill('${c.client_id}', '${safeName}', '${selectedPeriod}')" class="w-full h-8 flex items-center justify-center rounded hover:bg-red-50 text-blue-600 hover:text-red-600 transition" title="Click to cancel billing">
+                            <div class="w-6 h-6 rounded-full bg-blue-100 text-current flex items-center justify-center shadow-sm border border-blue-200">
+                                <i class="fa-solid fa-check text-xs"></i>
+                            </div>
+                        </button>
+                    </td>`;
+                } else if (isReturnComplete) {
+                    billHtml = `<td class="px-1 py-3 text-center border-l border-gray-100 bg-indigo-50/10">
+                        <button onclick="preparePTBill('${c.client_id}', '${safeName}', '${selectedPeriod}')" class="bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white border border-indigo-200 px-2 py-1 rounded text-xs font-bold transition shadow-sm">Bill</button>
+                    </td>`;
+                } else {
+                    billHtml = `<td class="px-1 py-3 text-center border-l border-gray-100">
+                        <div class="w-full h-8"></div>
+                    </td>`;
+                }
+
+                // Premium Filing Date drawer concept: only show filing date if return status is completed Done!
+                const formattedDate = (item.returnStatus === 'Done' && item.filingDate) ? new Date(item.filingDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '—';
+                const filingDateHtml = `<td class="px-1 py-3 text-center border-l border-gray-100"><button onclick="openPTDrawer('${c.client_id}', '${safeName}', 'filingDate', 'Filing Date', '${selectedPeriod}', ${item.filingDate ? 'true' : 'false'})" class="w-full h-8 rounded hover:bg-indigo-50 text-slate-600 hover:text-indigo-600 transition flex items-center justify-center border border-transparent font-black text-[12px]">${formattedDate}</button></td>`;
+
+                // Comment column
+                const latestComment = window.globalPTLatestCommentMap && window.globalPTLatestCommentMap[c.client_id] ? window.globalPTLatestCommentMap[c.client_id] : '';
+                const commentHtml = latestComment 
+                    ? `<td class="px-3 py-3 border-l border-gray-100 align-top text-xs text-slate-600 font-semibold max-w-xs break-words cursor-pointer hover:bg-indigo-50/50" onclick="openPTDrawer('${c.client_id}', '${safeName}', 'general_remark', 'General Comments', '${selectedPeriod}', false)">
+                        <div class="line-clamp-2 leading-tight" title="${latestComment.replace(/"/g, '&quot;')}">${latestComment}</div>
+                       </td>`
+                    : `<td class="px-3 py-3 border-l border-gray-100 text-center align-middle cursor-pointer hover:bg-indigo-50/50" onclick="openPTDrawer('${c.client_id}', '${safeName}', 'general_remark', 'General Comments', '${selectedPeriod}', false)">
+                        <button class="text-gray-300 hover:text-indigo-500 transition"><i class="fa-regular fa-comment-dots text-sm"></i></button>
+                       </td>`;
+
+                tbody.innerHTML += `
+                <tr class="hover:bg-slate-50 transition border-b border-slate-100 ${isStuck ? 'bg-rose-50/10 hover:bg-rose-50/20 opacity-65' : ''}">
+                    <td class="px-2 py-3 text-center text-xs font-bold text-slate-400">${index + 1}</td>
+                    <td class="px-3 py-3 border-r border-slate-100">
+                        <span onclick="openUniversalClientProfile('${c.client_id}')" class="font-black text-slate-800 hover:text-indigo-600 cursor-pointer text-[13px] hover:underline leading-tight block">${displayName}</span>
+                        <div class="flex items-center gap-1.5 mt-1 flex-wrap">
+                            ${assigneeBadge}
+                            ${stuckBadge}
+                            <span class="px-1.5 py-0.5 bg-slate-50 text-slate-400 border border-slate-100 rounded text-[9px] font-bold uppercase tracking-wider inline-flex items-center leading-none font-mono">${c.entity_type || 'Unknown'}</span>
+                        </div>
+                    </td>
+                    ${callHtml}
+                    ${advanceHtml}
+                    ${challanHtml}
+                    ${returnHtml}
+                    ${billHtml}
+                    ${filingDateHtml}
+                    ${commentHtml}
+                </tr>`;
+            });
+
+            const viewContainer = document.getElementById('view-professional-tax');
+            const tableContainer = document.getElementById('pt-table-container');
+            if (viewContainer || tableContainer) {
+                const scrollPos = window.lastPtScrollPos || 0;
+                const tableScrollPos = window.lastPtTableScrollPos || 0;
+                setTimeout(() => {
+                    if (viewContainer) viewContainer.scrollTop = scrollPos;
+                    if (tableContainer) tableContainer.scrollTop = tableScrollPos;
+                    setTimeout(() => { window.ptIsLoading = false; }, 100);
+                }, 50);
+            } else {
+                window.ptIsLoading = false;
+            }
+        } catch (err) {
+            console.error("PT table render error:", err);
+            tbody.innerHTML = `<tr><td colspan="8" class="text-center py-8 text-rose-500 font-bold"><i class="fa-solid fa-triangle-exclamation text-2xl mb-2"></i><br>Render Error: ${err.message}</td></tr>`;
+        }
+    }
+
+    async function savePTStatus(clientId, period, field, value) {
+        try {
+            const key = `${clientId}_${period}`;
+            const track = globalPTTrackingMap[key] || {
+                challanStatus: 'Pending',
+                returnStatus: 'Pending',
+                billStatus: 'Unbilled',
+                filingDate: '',
+                isCall: 'Pending',
+                advance: 'Pending'
+            };
+
+            // Update the specific changed field
+            track[field] = value;
+            globalPTTrackingMap[key] = track;
+
+            // Render table locally first to offer a zero-latency responsive experience
+            renderFilteredPTTable();
+
+            // Insert new log into supabase
+            const hostClientId = globalClientsList.find(c => c.is_active !== false)?.client_id;
+            if (!hostClientId) throw new Error("No active client found to save log.");
+
+            // Format: [PT_TRACKING] clientId|period|challanStatus|returnStatus|billStatus|filingDate|isCall|advance
+            const note = `[PT_TRACKING] ${clientId}|${period}|${track.challanStatus}|${track.returnStatus}|${track.billStatus}|${track.filingDate}|${track.isCall}|${track.advance}`;
+
+            await supabaseClient.from('task_logs').insert([{
+                client_id: hostClientId,
+                user_id: currentUser.id,
+                note: note
+            }]);
+
+        } catch (err) {
+            console.error("Error saving PT status:", err);
+            showToast("Failed to save changes: " + err.message);
+        }
+    }
+
+    async function assignPTClient(clientId, makerId) {
+        try {
+            // Find vis settings to see which service is mapped to professional tax
+            let serviceType = 'PF & ESIC';
+            const { data: visSettings } = await supabaseClient
+                .from('page_visibility_settings')
+                .select('enrolled_services')
+                .eq('page_id', 'view-professional-tax')
+                .maybeSingle();
+
+            const activeService = (visSettings && visSettings.enrolled_services && visSettings.enrolled_services[0]) || serviceType;
+
+            // Delete old assignment for this client & service
+            const { error: delErr } = await supabaseClient
+                .from('client_assignments')
+                .delete()
+                .eq('client_id', clientId)
+                .eq('service_type', activeService);
+
+            if (delErr) throw delErr;
+
+            if (makerId) {
+                const { error: insErr } = await supabaseClient
+                    .from('client_assignments')
+                    .insert([{
+                        client_id: clientId,
+                        service_type: activeService,
+                        maker_id: makerId
+                    }]);
+                if (insErr) throw insErr;
+            }
+
+            // Push a history log in task_history for professional audit trail!
+            const hostClientId = globalClientsList.find(c => c.is_active !== false)?.client_id;
+            const assigneeName = makerId ? (globalTeamMembers.find(u => u.id === makerId)?.name || 'selected user') : 'Unassigned';
+            if (hostClientId) {
+                await supabaseClient.from('task_history').insert([{
+                    client_id: clientId,
+                    task_type: 'PT',
+                    task_name: 'Professional Tax Assignment',
+                    user_id: currentUser.id,
+                    note: `Workflow assigned to ${assigneeName}`,
+                    timestamp: new Date().toISOString()
+                }]);
+            }
+
+            showToast("Assignment updated successfully!");
+            if (!window.globalAssignmentsList) window.globalAssignmentsList = [];
+            window.globalAssignmentsList = window.globalAssignmentsList.filter(a => !(a.client_id === clientId && a.service_type === activeService));
+            if (makerId) {
+                window.globalAssignmentsList.push({
+                    client_id: clientId,
+                    service_type: activeService,
+                    maker_id: makerId
+                });
+            }
+            renderFilteredPTTable();
+
+        } catch (err) {
+            console.error("Assignment error:", err);
+            showToast("Failed to update assignment: " + err.message);
+        }
+    }
+
+    async function openPTDrawer(clientId, clientName, columnKey, taskName, period, isDone) {
+        try {
+            document.getElementById('ptDrawerClientId').value = clientId;
+            document.getElementById('ptDrawerPeriod').value = period;
+            document.getElementById('ptDrawerColumn').value = columnKey;
+            
+            document.getElementById('ptDrawerClientName').innerText = clientName;
+            
+            const displayPeriod = period.replace('FY_', 'FY ');
+            const taskNameDisplay = `${taskName} - ${displayPeriod}`;
+            
+            document.getElementById('ptDrawerTaskName').textContent = taskNameDisplay;
+            document.getElementById('ptDrawerNote').value = '';
+
+            // Populate active team members select dropdown
+            const transferSelect = document.getElementById('ptTransferUserSelect');
+            if (transferSelect) {
+                transferSelect.innerHTML = '<option value="">-- No Transfer --</option>';
+                (window.globalTeamMembers || []).forEach(u => {
+                    transferSelect.innerHTML += `<option value="${u.id}">${u.name}</option>`;
+                });
+
+                // Set currently assigned assignee as default selected
+                const allowedServices = (window.globalPTAllowedServices && window.globalPTAllowedServices.length > 0)
+                    ? window.globalPTAllowedServices
+                    : ['PT', 'Professional Tax', 'PF & ESIC'];
+                const assignment = (window.globalAssignmentsList || []).find(a => 
+                    a.client_id === clientId && 
+                    a.service_type && 
+                    allowedServices.some(as => a.service_type.toLowerCase() === as.toLowerCase())
+                );
+                if (assignment && assignment.maker_id) {
+                    transferSelect.value = assignment.maker_id;
+                }
+            }
+
+            const dateDiv = document.getElementById('ptDrawerFilingDateDiv');
+            if (columnKey === 'filingDate' || ((columnKey === 'challanStatus' || columnKey === 'returnStatus') && !isDone)) {
+                dateDiv.classList.remove('hidden');
+                document.getElementById('ptDrawerFilingDate').value = new Date().toISOString().split('T')[0]; 
+            } else {
+                dateDiv.classList.add('hidden');
+            }
+
+            const btnNote = document.getElementById('ptSaveNoteOnlyBtn');
+            const btnDone = document.getElementById('ptSaveTaskBtn');
+            const btnStuck = document.getElementById('savePtStuckBtn');
+
+            const isClientStuck = !!(window.globalPTStuckMap && window.globalPTStuckMap[clientId]);
+            if (btnStuck) {
+                if (isClientStuck) {
+                    btnStuck.innerHTML = '<i class="fa-solid fa-circle-check"></i> Unstuck';
+                    btnStuck.className = "flex-1 bg-amber-50 hover:bg-amber-100 text-amber-700 px-4 py-3 rounded-xl font-bold transition shadow-sm flex justify-center items-center gap-2 border border-amber-200";
+                } else {
+                    btnStuck.innerHTML = '<i class="fa-solid fa-circle-exclamation"></i> Stuck';
+                    btnStuck.className = "flex-1 bg-rose-50 hover:bg-rose-100 text-rose-700 px-4 py-3 rounded-xl font-bold transition shadow-sm flex justify-center items-center gap-2 border border-rose-200";
+                }
+
+                if (isDone) {
+                    btnStuck.classList.add('hidden');
+                } else {
+                    btnStuck.classList.remove('hidden');
+                }
+            }
+
+            // Determine appropriate button texts
+            let doneText = 'Mark Completed';
+            let revertText = 'Revert to Pending';
+            if (columnKey === 'advance') {
+                doneText = 'Mark Received';
+                revertText = 'Revert to Pending';
+            } else if (columnKey === 'billStatus') {
+                doneText = 'Mark Billed';
+                revertText = 'Revert to Unbilled';
+            }
+
+            // Always display the button but toggle style/onclick between Mark Done and Revert Pending
+            if (isDone) {
+                btnDone.className = 'flex-1 bg-rose-500 hover:bg-rose-600 text-white px-4 py-3 rounded-xl font-bold transition shadow-md flex justify-center items-center gap-2';
+                btnDone.setAttribute('onclick', 'savePTTaskFromDrawer(true)');
+                btnDone.innerHTML = `<i class="fa-solid fa-rotate-left"></i> ${revertText}`;
+            } else {
+                btnDone.className = 'flex-1 bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-3 rounded-xl font-bold transition shadow-md flex justify-center items-center gap-2';
+                btnDone.setAttribute('onclick', 'savePTTaskFromDrawer(false)');
+                btnDone.innerHTML = `<i class="fa-solid fa-check-double"></i> ${doneText}`;
+            }
+
+            if (columnKey === 'general_remark') {
+                btnDone.classList.add('hidden');
+                if (btnStuck) btnStuck.classList.add('hidden');
+            } else {
+                btnDone.classList.remove('hidden');
+            }
+
+            // Make sure Record Remark button takes up its half of the slot
+            btnNote.className = 'flex-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 px-4 py-3 rounded-xl font-bold transition shadow-sm flex justify-center items-center gap-2';
+
+            document.getElementById('ptTaskDrawer').classList.remove('hidden');
+
+            // Load timeline history logs
+            const tl = document.getElementById('ptDrawerHistoryTimeline');
+            tl.innerHTML = '<div class="text-sm text-gray-400"><i class="fa-solid fa-spinner fa-spin"></i> Loading specific history...</div>';
+            
+            const hostClientId = globalClientsList.find(c => c.is_active !== false)?.client_id;
+            if (hostClientId) {
+                const { data: logs } = await supabaseClient
+                    .from('task_logs')
+                    .select('*, users(name)')
+                    .or(`note.ilike.%[PT_LOG] ${clientId}|${period}|%,note.ilike.%[PT_TRACKING] ${clientId}|${period}|%,note.ilike.%[PT_REMARK] ${clientId}|${period}|%,note.ilike.%[PT Stuck] ${clientId}|${period}%,note.ilike.%[PT Unstuck] ${clientId}|${period}%`)
+                    .order('timestamp', { ascending: false });
+
+                tl.innerHTML = '';
+                
+                let filteredLogs = [];
+                if (logs) {
+                    filteredLogs = logs.filter(log => {
+                        if (log.note.startsWith('[PT_LOG]')) {
+                            const payload = log.note.replace('[PT_LOG] ', '').trim();
+                            const parts = payload.split('|');
+                            return parts[2] === columnKey;
+                        }
+                        if (log.note.startsWith('[PT_TRACKING]')) {
+                            const payload = log.note.replace('[PT_TRACKING] ', '').trim();
+                            const parts = payload.split('|');
+                            if (parts.length >= 8) {
+                                const challanStatus = parts[2] || 'Pending';
+                                const returnStatus = parts[3] || 'Pending';
+                                const billStatus = parts[4] || 'Unbilled';
+                                const isCall = parts[6] || 'Pending';
+                                const advance = parts[7] || 'Pending';
+                                
+                                if (columnKey === 'challanStatus' && challanStatus === 'Done') return true;
+                                if (columnKey === 'returnStatus' && returnStatus === 'Done') return true;
+                                if (columnKey === 'billStatus' && billStatus === 'Billed') return true;
+                                if (columnKey === 'isCall' && isCall === 'Done') return true;
+                                if (columnKey === 'advance' && advance === 'Received') return true;
+                            }
+                            return false;
+                        }
+                        if (log.note.startsWith('[PT_REMARK]')) {
+                            return true; // Show legacy global remarks
+                        }
+                        if (log.note.startsWith('[PT Stuck]')) {
+                            return true;
+                        }
+                        if (log.note.startsWith('[PT Unstuck]')) {
+                            return true;
+                        }
+                        return false;
+                    });
+                }
+
+                if (filteredLogs.length === 0) {
+                    tl.innerHTML = '<div class="text-xs text-gray-400 italic py-2">No previous history for this task.</div>';
+                } else {
+                    filteredLogs.forEach(log => {
+                        const date = new Date(log.timestamp).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+                        let msg = '';
+                        
+                        if (log.note.startsWith('[PT_LOG]')) {
+                            const payload = log.note.replace('[PT_LOG] ', '').trim();
+                            const parts = payload.split('|');
+                            const statusVal = parts[3] || 'Pending';
+                            const remarkText = parts[4] || '';
+                            const fDate = parts[5] || '';
+                            
+                            msg = `Status updated to <strong>${statusVal}</strong>`;
+                            if (remarkText) {
+                                msg += `<br><span class="text-gray-600 italic">Remark: "${remarkText}"</span>`;
+                            }
+                            if (fDate) {
+                                msg += `<br><span class="text-xs text-indigo-600 font-medium">Filing/Receipt Date: ${fDate}</span>`;
+                            }
+                        } else if (log.note.startsWith('[PT_REMARK]')) {
+                            const payload = log.note.replace('[PT_REMARK] ', '').trim();
+                            const parts = payload.split('|');
+                            msg = `<span class="text-xs font-bold text-amber-600 bg-amber-50 px-1 rounded border border-amber-100">Legacy Remark</span>: "${parts[2] || ''}"`;
+                        } else if (log.note.startsWith('[PT_TRACKING]')) {
+                            const payload = log.note.replace('[PT_TRACKING] ', '').trim();
+                            const parts = payload.split('|');
+                            msg = `<span class="text-xs font-bold text-amber-600 bg-amber-50 px-1 rounded border border-amber-100">Legacy Snapshot</span>: Challan: ${parts[2] || 'Pending'}, Return: ${parts[3] || 'Pending'}, Bill: ${parts[4] || 'Unbilled'}, Call: ${parts[6] || 'Pending'}, Advance: ${parts[7] || 'Pending'}`;
+                        } else if (log.note.startsWith('[PT Stuck]')) {
+                            const payload = log.note.replace('[PT Stuck] ', '').trim();
+                            const parts = payload.split('|');
+                            msg = `<span class="text-xs font-bold text-rose-600 bg-rose-50 px-1 rounded border border-rose-100 uppercase">Stuck</span>: ${parts[2] || 'Client marked as stuck / unresponsive.'}`;
+                        } else if (log.note.startsWith('[PT Unstuck]')) {
+                            const payload = log.note.replace('[PT Unstuck] ', '').trim();
+                            const parts = payload.split('|');
+                            msg = `<span class="text-xs font-bold text-emerald-600 bg-emerald-50 px-1 rounded border border-emerald-100 uppercase">Unstuck</span>: ${parts[2] || 'Client marked as active again.'}`;
+                        }
+                        
+                        tl.innerHTML += `
+                        <div class="bg-white rounded-xl border border-gray-200 mb-3 shadow-sm overflow-hidden border-l-4 border-l-indigo-400">
+                            <div class="px-4 py-2 border-b border-gray-100 flex items-center justify-between bg-gray-50">
+                                <span class="text-xs font-bold text-gray-500 uppercase">${date}</span>
+                                <div class="flex items-center gap-3">
+                                    <span class="text-xs font-bold text-indigo-600 uppercase">${log.users?.name || 'System'}</span>
+                                    <button onclick="deletePTLog('${log.log_id}', '${clientId}', '${columnKey}', '${period}')" class="text-gray-400 hover:text-red-500 transition cursor-pointer p-1" title="Delete & Revert Status">
+                                        <i class="fa-solid fa-trash-can text-[10px]"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="p-4"><p class="text-sm text-gray-700">${msg}</p></div>
+                        </div>`;
+                    });
+                }
+            }
+
+        } catch (err) {
+            console.error("Error opening PT drawer:", err);
+        }
+    }
+
+    async function deletePTLog(logId, clientId, columnKey, period) {
+        if (!confirm("Are you sure you want to delete this log? If this was a completion record, the status will be reverted.")) return;
+        
+        try {
+            const { error: delErr } = await supabaseClient.from('task_logs').delete().eq('log_id', logId);
+            if (delErr) throw delErr;
+
+            showToast("Log deleted successfully.");
+
+            closePTDrawer();
+            
+            // Re-fetch all data and reconstruct states
+            await loadPTCenterData();
+
+        } catch (err) {
+            console.error("Delete PT Log Error:", err);
+            showToast("Error: " + err.message);
+        }
+    }
+
+    async function savePTTaskFromDrawer(isRevert) {
+        const btn = document.getElementById('ptSaveTaskBtn');
+        const ogHtml = btn.innerHTML;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving...';
+        btn.disabled = true;
+
+        try {
+            const clientId = document.getElementById('ptDrawerClientId').value;
+            const period = document.getElementById('ptDrawerPeriod').value;
+            const columnKey = document.getElementById('ptDrawerColumn').value;
+            const noteText = document.getElementById('ptDrawerNote').value.trim();
+            const transferTo = document.getElementById('ptTransferUserSelect').value;
+            const filingDateVal = document.getElementById('ptDrawerFilingDate').value;
+
+            // 1. Determine status value
+            let statusValue = 'Pending';
+            if (isRevert) {
+                if (columnKey === 'billStatus') {
+                    statusValue = 'Unbilled';
+                } else {
+                    statusValue = 'Pending';
+                }
+            } else {
+                if (columnKey === 'challanStatus' || columnKey === 'returnStatus') {
+                    statusValue = 'Done';
+                } else if (columnKey === 'isCall') {
+                    statusValue = 'Done';
+                } else if (columnKey === 'advance') {
+                    statusValue = 'Received';
+                } else if (columnKey === 'billStatus') {
+                    statusValue = 'Billed';
+                }
+            }
+
+            // 2. Save Tracking Status log using [PT_LOG]
+            const hostClientId = globalClientsList.find(c => c.is_active !== false)?.client_id;
+            if (!hostClientId) throw new Error("No active client found to save.");
+
+            // Clear filing date if reverting
+            const filingDate = isRevert ? '' : (filingDateVal || '');
+
+            // Format: [PT_LOG] clientId|period|columnKey|statusValue|textRemark|filingDate
+            const logNote = `[PT_LOG] ${clientId}|${period}|${columnKey}|${statusValue}|${noteText || (isRevert ? 'Reverted to Pending' : 'Completed')}|${filingDate}`;
+
+            await supabaseClient.from('task_logs').insert([{
+                client_id: hostClientId,
+                user_id: currentUser.id,
+                note: logNote
+            }]);
+
+            const isCurrentlyStuck = !!(window.globalPTStuckMap && window.globalPTStuckMap[clientId]);
+            if (isCurrentlyStuck && !isRevert) {
+                await supabaseClient.from('task_logs').insert([{
+                    client_id: hostClientId,
+                    user_id: currentUser.id,
+                    note: `[PT Unstuck] ${clientId}|${period}|Unstuck: Automatically activated due to task completion.`
+                }]);
+            }
+
+            // 3. Handle workflow assignment transfer
+            if (transferTo) {
+                const allowedServices = (window.globalPTAllowedServices && window.globalPTAllowedServices.length > 0)
+                    ? window.globalPTAllowedServices
+                    : ['PT', 'Professional Tax', 'PF & ESIC'];
+                const assignment = (window.globalAssignmentsList || []).find(a => 
+                    a.client_id === clientId && 
+                    a.service_type && 
+                    allowedServices.some(as => a.service_type.toLowerCase() === as.toLowerCase())
+                );
+                if (!assignment || assignment.maker_id !== transferTo) {
+                    await assignPTClient(clientId, transferTo);
+                }
+            }
+
+            // Refresh UI
+            await loadPTCenterData();
+            closePTDrawer();
+
+        } catch (err) {
+            console.error("Error saving PT task from drawer:", err);
+            showToast("Error: " + err.message);
+        } finally {
+            btn.innerHTML = ogHtml;
+            btn.disabled = false;
+        }
+    }
+
+    window.togglePTStuck = async function() {
+        const clientId = document.getElementById('ptDrawerClientId').value;
+        const period = document.getElementById('ptDrawerPeriod').value;
+        const btn = document.getElementById('savePtStuckBtn');
+        if (!btn) return;
+        
+        const ogHtml = btn.innerHTML;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving...';
+
+        try {
+            const isCurrentlyStuck = !!(window.globalPTStuckMap && window.globalPTStuckMap[clientId]);
+            const historyNote = isCurrentlyStuck 
+                ? `[PT Unstuck] ${clientId}|${period}|Unstuck: Client marked as active again.`
+                : `[PT Stuck] ${clientId}|${period}|Stuck: Client marked as stuck / unresponsive.`;
+
+            const hostClientId = globalClientsList.find(c => c.is_active !== false)?.client_id;
+            if (!hostClientId) throw new Error("No active client found.");
+
+            const { error: logErr } = await supabaseClient.from('task_logs').insert([{
+                client_id: hostClientId,
+                user_id: currentUser.id,
+                note: historyNote
+            }]);
+
+            if (logErr) throw logErr;
+
+            closePTDrawer();
+            btn.innerHTML = ogHtml;
+            loadPTCenterData();
+        } catch (err) {
+            console.error("Toggle PT Stuck Error:", err);
+            btn.innerHTML = ogHtml;
+            showToast("Error toggling stuck state: " + err.message);
+        }
+    }
+
+    async function savePTNoteOnlyFromDrawer() {
+        const btn = document.getElementById('ptSaveNoteOnlyBtn');
+        const ogHtml = btn.innerHTML;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Recording...';
+        btn.disabled = true;
+
+        try {
+            const clientId = document.getElementById('ptDrawerClientId').value;
+            const period = document.getElementById('ptDrawerPeriod').value;
+            const columnKey = document.getElementById('ptDrawerColumn').value;
+            const noteText = document.getElementById('ptDrawerNote').value.trim();
+            const transferTo = document.getElementById('ptTransferUserSelect').value;
+
+            if (!noteText && !transferTo) {
+                return showToast("Please enter a remark or select a user to transfer to.");
+            }
+
+            const key = `${clientId}_${period}`;
+            const track = globalPTTrackingMap[key] || {
+                challanStatus: 'Pending',
+                returnStatus: 'Pending',
+                billStatus: 'Unbilled',
+                filingDate: '',
+                isCall: 'Pending',
+                advance: 'Pending'
+            };
+
+            const hostClientId = globalClientsList.find(c => c.is_active !== false)?.client_id;
+            if (!hostClientId) throw new Error("No active client found.");
+
+            if (noteText) {
+                const currentStatus = track[columnKey] || 'Pending';
+                // Format: [PT_LOG] clientId|period|columnKey|statusValue|textRemark|filingDate
+                const logNote = `[PT_LOG] ${clientId}|${period}|${columnKey}|${currentStatus}|${noteText}|`;
+                await supabaseClient.from('task_logs').insert([{
+                    client_id: hostClientId,
+                    user_id: currentUser.id,
+                    note: logNote
+                }]);
+            }
+
+            if (transferTo) {
+                const allowedServices = (window.globalPTAllowedServices && window.globalPTAllowedServices.length > 0)
+                    ? window.globalPTAllowedServices
+                    : ['PT', 'Professional Tax', 'PF & ESIC'];
+                const assignment = (window.globalAssignmentsList || []).find(a => 
+                    a.client_id === clientId && 
+                    a.service_type && 
+                    allowedServices.some(as => a.service_type.toLowerCase() === as.toLowerCase())
+                );
+                if (!assignment || assignment.maker_id !== transferTo) {
+                    await assignPTClient(clientId, transferTo);
+                }
+            }
+
+            await loadPTCenterData();
+            closePTDrawer();
+
+        } catch (err) {
+            console.error("Error saving PT remark:", err);
+            showToast("Error: " + err.message);
+        } finally {
+            btn.innerHTML = ogHtml;
+            btn.disabled = false;
+        }
+    }
+
+    function closePTDrawer() {
+        document.getElementById('ptTaskDrawer').classList.add('hidden');
+    }
+
+    function sortPtTable(field) {
+        if (ptSortCol === field) {
+            ptSortAsc = !ptSortAsc;
+        } else {
+            ptSortCol = field;
+            ptSortAsc = true;
+        }
+
+        // Reset all header sort icons
+        const columns = ['display_name', 'isCall', 'advance', 'challanStatus', 'returnStatus', 'billStatus', 'filingDate'];
+        columns.forEach(col => {
+            const icon = document.getElementById(`sort_icon_pt_${col}`);
+            if (icon) {
+                icon.className = 'fa-solid fa-sort text-xs text-gray-300';
+            }
+        });
+
+        // Set active icon
+        const activeIcon = document.getElementById(`sort_icon_pt_${field}`);
+        if (activeIcon) {
+            activeIcon.className = ptSortAsc ? 'fa-solid fa-sort-up text-xs text-indigo-600' : 'fa-solid fa-sort-down text-xs text-indigo-600';
+        }
+
+        renderFilteredPTTable();
+    }
+
+    window.openPTBulkBillModal = function() {
+        const modal = document.getElementById('ptBulkBillModal');
+        if (!modal) return;
+
+        const selectEl = document.getElementById('ptMonthFilter');
+        const selectedPeriod = selectEl ? selectEl.value : '';
+        if (!selectedPeriod) return showToast("Please select a period first!");
+
+        const periodStr = selectedPeriod.replace('FY_', 'FY ');
+
+        document.getElementById('ptBulkBillModalPeriod').innerText = `Period: ${periodStr}`;
+
+        const tbody = document.getElementById('ptBulkBillModalTableBody');
+        tbody.innerHTML = '';
+
+        let totalClients = 0;
+        let totalAmount = 0;
+        window.ptBulkBillClientsList = []; // Store list for generation
+
+        globalPTClients.forEach(client => {
+            const key = `${client.client_id}_${selectedPeriod}`;
+            const track = globalPTTrackingMap[key] || {
+                challanStatus: 'Pending',
+                returnStatus: 'Pending',
+                billStatus: 'Unbilled',
+                filingDate: '',
+                isCall: 'Pending',
+                advance: 'Pending'
+            };
+            
+            const isBilled = window.globalPTBilledMap && window.globalPTBilledMap[client.client_id];
+
+            // Only if Return Status is completed (Done) AND NOT already billed!
+            if (track.returnStatus === 'Done' && !isBilled) {
+                const rate = parseFloat(window.globalPTRatesMap[client.client_id]) || 0;
+                totalClients++;
+                totalAmount += rate;
+
+                window.ptBulkBillClientsList.push({
+                    client_id: client.client_id,
+                    display_name: client.display_name,
+                    rate: rate
+                });
+
+                tbody.innerHTML += `
+                    <tr class="border-b border-slate-100 hover:bg-slate-50 transition">
+                        <td class="px-4 py-3 font-semibold text-slate-800">${client.display_name}</td>
+                        <td class="px-4 py-3 text-right font-mono text-slate-600">₹${rate.toFixed(2)}</td>
+                    </tr>
+                `;
+            }
+        });
+
+        document.getElementById('ptBulkBillModalTotalClients').innerText = totalClients;
+        document.getElementById('ptBulkBillModalTotalAmount').innerText = `₹${totalAmount.toFixed(2)}`;
+
+        if (totalClients === 0) {
+            tbody.innerHTML = `<tr><td colspan="2" class="text-center py-6 text-slate-400 italic">No unbilled clients with completed Return Status found for this period.</td></tr>`;
+        }
+
+        modal.classList.remove('hidden');
+    };
+
+    window.closePTBulkBillModal = function() {
+        const modal = document.getElementById('ptBulkBillModal');
+        if (modal) modal.classList.add('hidden');
+    };
+
+    window.generatePTBulkBills = async function() {
+        if (!window.ptBulkBillClientsList || window.ptBulkBillClientsList.length === 0) {
+            return showToast("No clients to bill!");
+        }
+
+        const selectEl = document.getElementById('ptMonthFilter');
+        const selectedPeriod = selectEl ? selectEl.value : '';
+        const periodStr = selectedPeriod.replace('FY_', 'FY ');
+
+        if (!confirm(`Are you sure you want to generate Professional Tax bills for ${window.ptBulkBillClientsList.length} clients?`)) return;
+
+        closePTBulkBillModal();
+        
+        const tbody = document.getElementById('pt-table-body');
+        tbody.innerHTML = '<tr><td colspan="8" class="text-center py-8 text-slate-400 italic"><i class="fa-solid fa-spinner fa-spin text-2xl mb-2 text-indigo-600"></i><br>Generating Bulk Bills...</td></tr>';
+
+        try {
+            let successCount = 0;
+            let firmId = null;
+            
+            const { data: setting } = await supabaseClient.from('app_settings').select('setting_value').eq('setting_key', 'office_os_default_pt_firm').maybeSingle();
+            
+            if (setting) {
+                firmId = setting.setting_value;
+            } else {
+                const { data: gstSetting } = await supabaseClient.from('app_settings').select('setting_value').eq('setting_key', 'office_os_default_gst_firm').maybeSingle();
+                if (gstSetting) firmId = gstSetting.setting_value;
+            }
+
+            for (const client of window.ptBulkBillClientsList) {
+                try {
+                    const billNo = await window.getNextInvoiceNumber(firmId);
+                    const invoiceData = { 
+                        client_id: client.client_id, 
+                        service_name: `Professional Tax Fees - ${periodStr}`, 
+                        amount: client.rate, 
+                        status: 'Unpaid', 
+                        bill_number: billNo, 
+                        generated_date: new Date().toISOString() 
+                    };
+                    if (firmId) invoiceData.firm_id = firmId;
+                    const { error } = await supabaseClient.from('invoices').insert([invoiceData]);
+                    if (error) throw error;
+
+                    const hostClientId = globalClientsList.find(c => c.is_active !== false)?.client_id;
+                    if (hostClientId) {
+                        const logNote = `[PT_LOG] ${client.client_id}|${selectedPeriod}|billStatus|Billed|Bulk Billed Generated|`;
+                        await supabaseClient.from('task_logs').insert([{
+                            client_id: hostClientId,
+                            user_id: currentUser.id,
+                            note: logNote
+                        }]);
+                    }
+
+                    successCount++;
+                } catch (err) {
+                    console.error(`Error billing client ${client.display_name}:`, err);
+                }
+            }
+            showToast(`Successfully generated ${successCount} Professional Tax bills!`);
+            await loadPTCenterData();
+        } catch (err) {
+            showToast("Error in bulk billing process: " + err.message);
+            await loadPTCenterData();
+        }
+    };
+
+    window.preparePTBill = async function(clientId, clientName, period) {
+        const rate = window.globalPTRatesMap[clientId] || 0;
+        const confirmedRate = prompt(`Confirm Professional Tax billing rate for ${clientName} (${period.replace('FY_', 'FY ')}):`, rate);
+        if (confirmedRate === null) return; // User cancelled
+        
+        const amount = parseFloat(confirmedRate);
+        if (isNaN(amount)) return showToast("Invalid amount!");
+
+        try {
+            const periodStr = period.replace('FY_', 'FY ');
+
+            if (amount === 0) {
+                // Save a log in task_logs to set billStatus to Billed (Free)
+                const hostClientId = globalClientsList.find(c => c.is_active !== false)?.client_id;
+                if (hostClientId) {
+                    const logNote = `[PT_LOG] ${clientId}|${period}|billStatus|Billed|Marked as Free (0 Rate)|`;
+                    await supabaseClient.from('task_logs').insert([{
+                        client_id: hostClientId,
+                        user_id: currentUser.id,
+                        note: logNote
+                    }]);
+                }
+                showToast("Task marked as completed with 0 rate (Free).");
+            } else {
+                let firmId = null;
+                const { data: setting } = await supabaseClient.from('app_settings').select('setting_value').eq('setting_key', 'office_os_default_pt_firm').maybeSingle();
+                if (setting) {
+                    firmId = setting.setting_value;
+                } else {
+                    const { data: gstSetting } = await supabaseClient.from('app_settings').select('setting_value').eq('setting_key', 'office_os_default_gst_firm').maybeSingle();
+                    if (gstSetting) firmId = gstSetting.setting_value;
+                }
+
+                const billNo = await window.getNextInvoiceNumber(firmId);
+                const invoiceData = { 
+                    client_id: clientId, 
+                    service_name: `Professional Tax Fees - ${periodStr}`, 
+                    amount: amount, 
+                    status: 'Unpaid', 
+                    bill_number: billNo, 
+                    generated_date: new Date().toISOString() 
+                };
+                if (firmId) invoiceData.firm_id = firmId;
+                const { error } = await supabaseClient.from('invoices').insert([invoiceData]);
+                if (error) throw error;
+
+                // Save a log in task_logs to set billStatus to Billed
+                const hostClientId = globalClientsList.find(c => c.is_active !== false)?.client_id;
+                if (hostClientId) {
+                    const logNote = `[PT_LOG] ${clientId}|${period}|billStatus|Billed|Bill Prepared (₹${amount})|`;
+                    await supabaseClient.from('task_logs').insert([{
+                        client_id: hostClientId,
+                        user_id: currentUser.id,
+                        note: logNote
+                    }]);
+                }
+
+                showToast("Professional Tax bill prepared successfully!");
+            }
+            
+            await loadPTCenterData(); // Refresh PT Center view
+        } catch (err) { 
+            showToast("Error preparing bill: " + err.message); 
+        }
+    };
+
+    window.promptCancelPTBill = async function(clientId, clientName, period) {
+        if (!confirm(`Are you sure you want to cancel the Professional Tax billing status for ${clientName} (Period: ${period.replace('FY_', 'FY ')})?\n\nThis will mark the bill as Cancelled and let you generate a new bill.`)) {
+            return;
+        }
+
+        const reason = prompt("Please enter the reason for cancellation (required):");
+        if (reason === null) return; // User cancelled
+        if (!reason.trim()) {
+            showToast("A reason is required to cancel the billing status.");
+            return;
+        }
+
+        try {
+            // Find and cancel matching active invoices
+            const { data: invoices } = await supabaseClient.from('invoices')
+                .select('*')
+                .eq('client_id', clientId)
+                .neq('status', 'Cancelled');
+            
+            if (invoices && invoices.length > 0) {
+                const periodStr = period.replace('FY_', 'FY ');
+                const matchingInvoices = invoices.filter(inv => {
+                    return inv.service_name && inv.service_name.includes(`Professional Tax Fees - ${periodStr}`);
+                });
+
+                if (matchingInvoices.length > 0) {
+                    const pkColumn = (invoices[0].invoice_id !== undefined) ? 'invoice_id' : 'id';
+                    const idsToCancel = matchingInvoices.map(inv => inv[pkColumn]);
+                    
+                    const { error: invErr } = await supabaseClient.from('invoices')
+                        .update({ status: 'Cancelled' })
+                        .in(pkColumn, idsToCancel);
+                    
+                    if (invErr) throw invErr;
+                }
+            }
+
+            // Save a log in task_logs to revert billStatus to Unbilled!
+            const hostClientId = globalClientsList.find(c => c.is_active !== false)?.client_id;
+            if (hostClientId) {
+                const logNote = `[PT_LOG] ${clientId}|${period}|billStatus|Unbilled|Billing Cancelled. Reason: ${reason}|`;
+                await supabaseClient.from('task_logs').insert([{
+                    client_id: hostClientId,
+                    user_id: currentUser.id,
+                    note: logNote
+                }]);
+            }
+
+            showToast("Billing status cancelled and logged successfully.");
+            await loadPTCenterData(); // Refresh PT Center view
+        } catch (err) {
+            showToast("Error cancelling bill: " + err.message);
+        }
+    };
+
+    window.openPTDrawer = openPTDrawer;
+    window.savePTTaskFromDrawer = savePTTaskFromDrawer;
+    window.deletePTLog = deletePTLog;
+</script>

@@ -6,6 +6,9 @@
     const pagesToManage = [
         { id: 'view-gst-center', name: 'GST Center', services: ['GST'] },
         { id: 'view-tds-center', name: 'TDS Returns', services: ['TDS Return'] },
+        { id: 'view-professional-tax', name: 'Professional Tax', services: ['PT'] },
+        { id: 'view-income-tax', name: 'Income Tax Center', services: ['Income Tax Return'] },
+        { id: 'view-pf-esic', name: 'Pf & ESIC', services: ['PF', 'ESIC'] },
         { id: 'view-audits', name: 'Audit Status', services: [] }, 
         { id: 'view-startups-subsidy', name: 'Startups & Subsidy', services: ['Startup', 'Subsidy'] }
     ];
@@ -45,8 +48,8 @@
             
             // Fetch allowed services from visibility settings if applicable
             let allowedServices = page.services;
-            if (pageId === 'view-gst-center' || pageId === 'view-tds-center') {
-                const { data: visSettings } = await supabaseClient.from('page_visibility_settings').select('enrolled_services').eq('page_id', pageId).single();
+            if (pageId === 'view-gst-center' || pageId === 'view-tds-center' || pageId === 'view-professional-tax' || pageId === 'view-income-tax' || pageId === 'view-pf-esic') {
+                const { data: visSettings } = await supabaseClient.from('page_visibility_settings').select('enrolled_services').eq('page_id', pageId).maybeSingle();
                 if (visSettings && visSettings.enrolled_services) {
                     allowedServices = visSettings.enrolled_services;
                 }
@@ -68,17 +71,19 @@
             }
 
             if (clients.length === 0) {
-                return alert("No clients found for this page.");
+                return showToast("No clients found for this page.");
             }
 
             // 2. Fetch assignments for these clients
-            const { data: assignments } = await supabaseClient.from('client_assignments').select('*');
+            const { data: assignments } = await fetchAllRows((from, to) => supabaseClient.from('client_assignments').select('*').order('id').range(from, to));
             
             // 3. Fetch rates (stored in task_logs with tag [PAGE_RATE])
-            const { data: rateLogs } = await supabaseClient.from('task_logs')
+            const { data: rateLogs } = await fetchAllRows((from, to) => supabaseClient.from('task_logs')
                 .select('note')
                 .ilike('note', `[PAGE_RATE] ${pageId}%`)
-                .order('timestamp', { ascending: false });
+                .order('timestamp', { ascending: false })
+                .order('log_id', { ascending: false })
+                .range(from, to));
 
             const ratesMap = {};
             (rateLogs || []).forEach(log => {
@@ -92,7 +97,7 @@
 
             // 4. Prepare data for Excel
             const excelData = clients.map(c => {
-                const assignment = (assignments || []).find(a => a.client_id === c.client_id && page.services.includes(a.service_type));
+                const assignment = (assignments || []).find(a => a.client_id === c.client_id && allowedServices.includes(a.service_type));
                 let assigneeName = '';
                 if (assignment && assignment.maker_id) {
                     const user = window.globalTeamMembers.find(u => u.id === assignment.maker_id);
@@ -110,6 +115,11 @@
             // 5. Generate Excel
             const ws = XLSX.utils.json_to_sheet(excelData);
             const wb = XLSX.utils.book_new();
+            wb.Props = {
+                Title: page.name,
+                Subject: pageId,
+                Author: "Office OS"
+            };
             XLSX.utils.book_append_sheet(wb, ws, "Page Data");
 
             // NEW: Add a sheet for users list to enable dropdown validation
@@ -143,7 +153,7 @@
 
         } catch (err) {
             console.error("Download error:", err);
-            alert("Error generating download: " + err.message);
+            showToast("Error generating download: " + err.message);
         }
     }
 
@@ -151,21 +161,43 @@
         const file = event.target.files[0];
         if (!file) return;
 
+        const page = pagesToManage.find(p => p.id === pageId);
+        if (!page) return;
+
+        // Safeguard 1: Filename validation (checks if the uploaded filename strictly matches the expected pattern)
+        const expectedBase = page.name.replace(/\s+/g, '_');
+        const escapeRegExp = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const escapedBase = escapeRegExp(expectedBase);
+        const expectedPattern = new RegExp(`^${escapedBase}_Data(?:\\s*\\(\\d+\\))?\\.xlsx$`, 'i');
+
+        if (!expectedPattern.test(file.name)) {
+            showToast(`Accidental Upload Blocked!\nYou are trying to upload data to "${page.name}", but the file you selected ("${file.name}") does not match the expected filename structure (e.g., "${expectedBase}_Data.xlsx").\n\nPlease select the correct file downloaded from the "${page.name}" section.`);
+            event.target.value = '';
+            return;
+        }
+
         const reader = new FileReader();
         reader.onload = async (e) => {
             try {
                 const data = new Uint8Array(e.target.result);
                 const workbook = XLSX.read(data, { type: 'array' });
+
+                // Safeguard 2: Internal Metadata validation (Bulletproof check)
+                const fileSubject = workbook.Props ? workbook.Props.Subject : null;
+                const fileTitle = workbook.Props ? workbook.Props.Title : null;
+                if (fileSubject && fileSubject !== pageId) {
+                    showToast(`Accidental Upload Blocked!\nThis file contains data for "${fileTitle || fileSubject}", but you are trying to upload it to "${page.name}".\n\nPlease select the correct file.`);
+                    event.target.value = '';
+                    return;
+                }
+
                 const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
                 const jsonData = XLSX.utils.sheet_to_json(firstSheet);
 
-                if (jsonData.length === 0) return alert("Excel sheet is empty!");
-
-                const page = pagesToManage.find(p => p.id === pageId);
-                if (!page) return;
+                if (jsonData.length === 0) return showToast("Excel sheet is empty!");
 
                 const hostClientId = globalClientsList.find(c => c.is_active !== false)?.client_id;
-                if (!hostClientId) return alert("Error: No active client found to save configuration.");
+                if (!hostClientId) return showToast("Error: No active client found to save configuration.");
 
                 let successCount = 0;
 
@@ -180,7 +212,13 @@
                     if (assigneeName) {
                         const user = window.globalTeamMembers.find(u => u.name === assigneeName);
                         if (user) {
-                            const serviceType = page.services[0] || 'General'; 
+                            let serviceType = page.services[0] || 'General';
+                            if (pageId === 'view-gst-center' || pageId === 'view-tds-center' || pageId === 'view-professional-tax' || pageId === 'view-income-tax' || pageId === 'view-pf-esic') {
+                                const { data: visSettings } = await supabaseClient.from('page_visibility_settings').select('enrolled_services').eq('page_id', pageId).maybeSingle();
+                                if (visSettings && visSettings.enrolled_services && visSettings.enrolled_services[0]) {
+                                    serviceType = visSettings.enrolled_services[0];
+                                }
+                            }
                             
                             await supabaseClient.from('client_assignments')
                                 .delete()
@@ -208,12 +246,12 @@
                     successCount++;
                 }
 
-                alert(`Successfully processed ${successCount} rows!`);
+                showToast(`Successfully processed ${successCount} rows!`);
                 await refreshGlobalCache(); 
                 
             } catch (err) {
                 console.error("Upload error:", err);
-                alert("Error processing upload: " + err.message);
+                showToast("Error processing upload: " + err.message);
             }
         };
         reader.readAsArrayBuffer(file);

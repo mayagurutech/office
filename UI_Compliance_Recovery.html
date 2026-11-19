@@ -32,12 +32,13 @@
                 </div>
             </div>
             
-            <div class="flex items-center gap-2">
+            <div id="transferControlWrapper" class="flex items-center gap-2">
                 <select id="transferUserSelect" class="rounded-xl border border-slate-200 px-4 py-3 text-xs outline-none focus:ring-4 focus:ring-indigo-50 bg-slate-50 font-bold w-44 transition-all appearance-none cursor-pointer">
                     <option value="">-- Transfer Case --</option>
                 </select>
                 <button onclick="transferDebtorCase()" class="bg-indigo-600 text-white px-5 py-3 rounded-xl font-black hover:bg-black transition-all shadow-lg shadow-indigo-100 text-[10px] uppercase tracking-wider active:scale-95">Transfer</button>
             </div>
+            <div id="transferUnmappedNotice" class="hidden text-xs font-black text-rose-600 bg-rose-50 border border-rose-100 px-4 py-2.5 rounded-xl"><i class="fa-solid fa-circle-exclamation mr-1.5 animate-pulse"></i> Link a client first to assign owner</div>
 
             <div class="flex-1"></div>
 

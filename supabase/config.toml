@@ -1,0 +1,6 @@
+project_id = "xeebucvvaxyglwjkkfvr"
+
+# Callers are not logged in yet and the publishable key is not a JWT;
+# the function authenticates the caller itself (name + PIN).
+[functions.office-login]
+verify_jwt = false

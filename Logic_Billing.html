@@ -6,21 +6,120 @@
 
     let globalInvoicesList = [];
 
-    window.getNextInvoiceNumber = async function(firmId) {
+    // Small memoized id->row lookups (rebuilt only when the underlying list is reloaded,
+    // i.e. a new array reference) so repeated GST calc / render passes over many invoices
+    // don't re-scan the full clients/firms lists with .find() every time.
+    let _billingFirmsMapSrc = null, _billingFirmsMap = null;
+    function getBillingFirmsMap() {
+        const src = window.globalBillingFirmsList || [];
+        if (_billingFirmsMapSrc !== src) {
+            _billingFirmsMap = new Map(src.map(f => [String(f.id), f]));
+            _billingFirmsMapSrc = src;
+        }
+        return _billingFirmsMap;
+    }
+    let _billingClientsMapSrc = null, _billingClientsMap = null;
+    function getBillingClientsMap() {
+        const src = window.globalAllClientsList || globalClientsList || [];
+        if (_billingClientsMapSrc !== src) {
+            _billingClientsMap = new Map(src.map(c => [c.client_id, c]));
+            _billingClientsMapSrc = src;
+        }
+        return _billingClientsMap;
+    }
+
+    window.getGstCalculation = function(firmId, clientId, baseAmount) {
+        let hasGst = false;
+        let firmGst = '';
+        let clientGst = '';
+
+        const firm = getBillingFirmsMap().get(String(firmId));
+        if (firm && firm.gstin) {
+            try {
+                const json = JSON.parse(firm.gstin);
+                firmGst = json.gst || '';
+                const noGst = json.no_gst === true;
+                if (firmGst.trim() !== '' && !noGst) {
+                    hasGst = true;
+                }
+            } catch (e) {}
+        }
+
+        if (!hasGst) {
+            const total = Math.round(baseAmount);
+            const roundOff = Math.round((total - baseAmount) * 100) / 100;
+            return {
+                hasGst: false,
+                taxable: baseAmount,
+                cgst: 0,
+                sgst: 0,
+                igst: 0,
+                total: total,
+                roundOff: roundOff,
+                gstType: 'none',
+                firmGst: ''
+            };
+        }
+
+        const client = getBillingClientsMap().get(clientId);
+        if (client && client.gstin) {
+            clientGst = client.gstin.trim();
+        }
+
+        const firmState = firmGst.trim().substring(0, 2);
+        const clientState = clientGst.substring(0, 2);
+
+        const isNumeric = (str) => /^\d{2}$/.test(str);
+
+        let gstType = 'CGST_SGST';
+        if (isNumeric(firmState) && isNumeric(clientState) && firmState !== clientState) {
+            gstType = 'IGST';
+        }
+
+        const cgst = gstType === 'CGST_SGST' ? Math.round(baseAmount * 0.09 * 100) / 100 : 0;
+        const sgst = gstType === 'CGST_SGST' ? Math.round(baseAmount * 0.09 * 100) / 100 : 0;
+        const igst = gstType === 'IGST' ? Math.round(baseAmount * 0.18 * 100) / 100 : 0;
+        const totalUnrounded = baseAmount + cgst + sgst + igst;
+        const total = Math.round(totalUnrounded);
+        const roundOff = Math.round((total - totalUnrounded) * 100) / 100;
+
+        return {
+            hasGst: true,
+            taxable: baseAmount,
+            cgst: cgst,
+            sgst: sgst,
+            igst: igst,
+            total: total,
+            roundOff: roundOff,
+            gstType: gstType,
+            firmGst: firmGst,
+            clientGst: clientGst
+        };
+    }
+
+    window.getNextInvoiceNumber = async function(firmId, isCreditNote = false) {
         const currentYearStr = new Date().getFullYear().toString().substr(-2);
-        let prefix = `INV-${currentYearStr}-`;
+        let prefix = isCreditNote ? `CN-${currentYearStr}-` : `INV-${currentYearStr}-`;
         let startingNo = 1;
-        let queryPattern = `INV-${currentYearStr}-%`;
+        let queryPattern = isCreditNote ? `CN-${currentYearStr}-%` : `INV-${currentYearStr}-%`;
 
         if (firmId) {
             const { data: firm } = await supabaseClient.from('billing_firms').select('gstin').eq('id', firmId).single();
             if (firm && firm.gstin) {
                 try {
                     const json = JSON.parse(firm.gstin);
-                    if (json.starting_bill_number) startingNo = parseInt(json.starting_bill_number, 10);
-                    if (json.bill_prefix) {
-                        prefix = json.bill_prefix;
-                        queryPattern = `${prefix}%`;
+                    if (isCreditNote) {
+                        if (json.starting_cn_number) startingNo = parseInt(json.starting_cn_number, 10);
+                        if (json.cn_prefix) {
+                            prefix = json.cn_prefix;
+                            queryPattern = `${prefix}%`;
+                        }
+                    } else {
+                        if (json.starting_bill_number) startingNo = parseInt(json.starting_bill_number, 10);
+                        if (json.bill_prefix) {
+                            prefix = json.bill_prefix;
+                            queryPattern = `${prefix}%`;
+                        }
                     }
                 } catch (e) {
                     // Not JSON
@@ -48,50 +147,122 @@
         return `${prefix}${nextNum.toString().padStart(3, '0')}`;
     }
 
+    // Supabase caps every response at 1000 rows regardless of .limit(), so page through
+    // with fetchAllRows (Logic_Core) — otherwise bills older than the newest 1000 never load.
+    function fetchAllInvoices() {
+        return fetchAllRows((from, to) => supabaseClient.from('invoices')
+            .select('invoice_id, bill_number, client_id, firm_id, service_name, amount, status, generated_date')
+            .order('generated_date', { ascending: false })
+            .order('invoice_id', { ascending: false })
+            .range(from, to));
+    }
+
     window.loadBillingData = async function() {
-        const tbody = document.getElementById('billing-table-body'); tbody.innerHTML = '<tr><td colspan="6" class="text-center py-8 text-gray-500"><i class="fa-solid fa-spinner fa-spin"></i> Loading...</td></tr>';
+        const tbody = document.getElementById('billing-table-body'); tbody.innerHTML = '<tr><td colspan="7" class="text-center py-8 text-gray-500"><i class="fa-solid fa-spinner fa-spin"></i> Loading...</td></tr>';
         
+        console.time('BillingTotalLoad');
         try {
-            let { data, error } = await supabaseClient.from('invoices').select('*, clients(client_id, display_name, pan_number), billing_firms(firm_name, gstin)').order('generated_date', { ascending: false });
+            console.time('SupabaseParallelFetch');
+            // Execute invoices, billing_firms, and (only if not already warm from login) the
+            // shared clients/services cache concurrently, instead of always re-fetching the
+            // whole global cache before even starting the invoices query. refreshGlobalCache()
+            // already runs once at login, so on a normal visit this cache is already populated
+            // and Billing can skip straight to fetching just its own data.
+            const promises = [fetchAllInvoices()];
+
+            const fetchFirms = !window.globalBillingFirmsList || window.globalBillingFirmsList.length === 0;
+            const firmsIndex = fetchFirms ? promises.push(supabaseClient.from('billing_firms').select('*')) - 1 : -1;
+
+            const needsClientCache = !window.globalAllClientsList || window.globalAllClientsList.length === 0;
+            if (needsClientCache) {
+                promises.push(refreshGlobalCache());
+            }
+
+            const results = await Promise.all(promises);
+            console.timeEnd('SupabaseParallelFetch');
+
+            const invoicesRes = results[0];
+            const firmsRes = firmsIndex >= 0 ? results[firmsIndex] : null;
+
+            if (firmsRes && firmsRes.data) {
+                window.globalBillingFirmsList = firmsRes.data;
+            }
+            
+            let data = invoicesRes.data;
+            let error = invoicesRes.error;
             
             if (error) {
-                alert("Primary query failed: " + error.message);
-                const fallback = await supabaseClient.from('invoices').select('*, clients(client_id, display_name, pan_number)').order('generated_date', { ascending: false });
+                console.error("Primary query failed:", error);
+                showToast("Primary query failed: " + error.message);
+                console.time('SupabaseInvoicesFetchFallback');
+                const fallback = await fetchAllInvoices();
+                console.timeEnd('SupabaseInvoicesFetchFallback');
                 
                 if (fallback.error) {
-                    alert("Fallback query failed: " + fallback.error.message);
+                    showToast("Fallback query failed: " + fallback.error.message);
                 }
                 data = fallback.data;
             }
             
-            globalInvoicesList = data || [];
+            // Map relations locally in JS in <1ms to eliminate slow database joins!
+            // Note: billing_firms.gstin can carry a large embedded logo/QR image (needed only
+            // in the single-invoice print preview), so we attach just id/firm_name here rather
+            // than the full firm row — otherwise every row's onclick handler below would
+            // serialize that image, which is what was making this table slow to render.
+            // openInvoicePreview() already lazy-fetches the full gstin blob for the one
+            // invoice being opened, so nothing here loses functionality.
+            const invoices = data || [];
+            const clientsMap = getBillingClientsMap();
+            const firmsMap = getBillingFirmsMap();
+            invoices.forEach(inv => {
+                inv.clients = clientsMap.get(inv.client_id) || { display_name: 'Unknown' };
+                const firm = firmsMap.get(String(inv.firm_id));
+                inv.billing_firms = firm ? { id: firm.id, firm_name: firm.firm_name } : null;
+            });
+
+            globalInvoicesList = invoices;
+            console.time('BillingFilterAndRender');
             window.filterBills();
+            console.timeEnd('BillingFilterAndRender');
         } catch (err) {
-            alert("Exception loading invoices: " + err.message);
+            showToast("Exception loading invoices: " + err.message);
         }
+        console.timeEnd('BillingTotalLoad');
     }
 
     window.renderBillsTable = function(invoices) {
         const tbody = document.getElementById('billing-table-body'); tbody.innerHTML = '';
-        if (!invoices || invoices.length === 0) { tbody.innerHTML = '<tr><td colspan="6" class="text-center py-8 text-gray-500">No invoices found.</td></tr>'; document.getElementById('total-unbilled').innerText = '\u20B90'; return; }
+        if (!invoices || invoices.length === 0) { tbody.innerHTML = '<tr><td colspan="7" class="text-center py-8 text-gray-500">No invoices found.</td></tr>'; document.getElementById('total-unbilled').innerText = '₹0'; return; }
         let totalInvoiced = 0;
+        const htmlRows = [];
         invoices.forEach(inv => {
             try {
                 const dateStr = new Date(inv.generated_date || inv.created_at || new Date()).toLocaleDateString('en-IN', {day:'numeric', month:'short', year:'numeric'});
                 const isCancelled = inv.status === 'Cancelled';
-                if (!isCancelled) totalInvoiced += parseFloat(inv.amount) || 0;
+                
+                const baseAmt = parseFloat(inv.amount) || 0;
+                const calc = window.getGstCalculation(inv.firm_id, inv.client_id, baseAmt);
+                const displayAmt = calc.total;
+
+                if (!isCancelled) totalInvoiced += displayAmt;
                 const rowStyle = isCancelled ? 'opacity-60 bg-gray-50' : 'hover:bg-gray-50 transition';
-                const billNoDisplay = isCancelled ? `<span class="line-through text-gray-400">${inv.bill_number || 'N/A'}</span> <span class="text-red-500 text-xs font-bold bg-red-50 px-2 py-0.5 rounded ml-2">CANCELLED</span>` : `<span class="font-bold text-gray-800">${inv.bill_number || 'N/A'}</span>`;
+                let billNoDisplay = isCancelled ? `<span class="line-through text-gray-400">${inv.bill_number || 'N/A'}</span> <span class="text-red-500 text-xs font-bold bg-red-50 px-2 py-0.5 rounded ml-2">CANCELLED</span>` : `<span class="font-bold text-gray-800">${inv.bill_number || 'N/A'}</span>`;
+                if (!isCancelled && displayAmt < 0) {
+                    billNoDisplay += ` <span class="text-emerald-600 text-[10px] font-bold bg-emerald-50 px-1.5 py-0.5 rounded ml-2 uppercase tracking-wider">Credit Note</span>`;
+                }
                 const safeId = inv.invoice_id !== undefined ? inv.invoice_id : inv.id;
                 
                 const actionButtons = isCancelled ? `<button onclick='openInvoicePreview(${JSON.stringify(inv).replace(/'/g, "&#39;")})' class="bg-gray-200 text-gray-600 px-3 py-1.5 rounded-lg text-xs font-bold transition shadow-sm"><i class="fa-solid fa-eye mr-1"></i> View</button>` : `<div class="flex items-center justify-end gap-2"><button onclick='openInvoicePreview(${JSON.stringify(inv).replace(/'/g, "&#39;")})' class="bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white border border-indigo-200 px-3 py-1.5 rounded-lg text-xs font-bold transition shadow-sm" title="View / Print"><i class="fa-solid fa-print"></i></button><button onclick="editInvoice('${safeId}')" class="bg-blue-50 text-blue-600 hover:bg-blue-600 hover:text-white border border-blue-200 px-3 py-1.5 rounded-lg text-xs font-bold transition shadow-sm" title="Edit Bill"><i class="fa-solid fa-pen"></i></button><button onclick="cancelInvoice('${safeId}')" class="bg-red-50 text-red-600 hover:bg-red-600 hover:text-white border border-red-200 px-3 py-1.5 rounded-lg text-xs font-bold transition shadow-sm" title="Cancel Bill"><i class="fa-solid fa-ban"></i></button></div>`;
-                tbody.innerHTML += `<tr class="border-b border-gray-100 ${rowStyle}"><td class="px-3 py-3 text-sm">${billNoDisplay}</td><td class="px-3 py-3 font-bold text-blue-600 hover:underline cursor-pointer" onclick="openUniversalClientProfile('${inv.client_id}')">${inv.clients?.display_name || 'Unknown'}</td><td class="px-3 py-3 text-gray-600">${inv.service_name}</td><td class="px-3 py-3 text-gray-500 whitespace-nowrap">${dateStr}</td><td class="px-3 py-3 font-bold text-gray-800">&#8377;${parseFloat(inv.amount).toLocaleString('en-IN')}</td><td class="px-3 py-3 text-right">${actionButtons}</td></tr>`;
+                const checked = window.selectedBillIds.has(String(safeId)) ? 'checked' : '';
+                htmlRows.push(`<tr class="border-b border-gray-100 ${rowStyle}"><td class="pl-4 pr-1 py-3"><input type="checkbox" class="bill-row-cb w-4 h-4 accent-indigo-600 cursor-pointer" data-id="${safeId}" ${checked} onchange="toggleBillSelection('${safeId}', this.checked)"></td><td class="px-3 py-3 text-sm">${billNoDisplay}</td><td class="px-3 py-3 font-bold text-blue-600 hover:underline cursor-pointer" onclick="openUniversalClientProfile('${inv.client_id}')">${inv.clients?.display_name || 'Unknown'}</td><td class="px-3 py-3 text-gray-600">${inv.service_name}</td><td class="px-3 py-3 text-gray-500 whitespace-nowrap">${dateStr}</td><td class="px-3 py-3 font-bold text-gray-800">&#8377;${displayAmt.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td><td class="px-3 py-3 text-right">${actionButtons}</td></tr>`);
             } catch (e) {
                 console.error("Error rendering invoice:", e);
-                alert("Error rendering invoice: " + e.message);
             }
         });
-        document.getElementById('total-unbilled').innerText = '\u20B9' + totalInvoiced.toLocaleString('en-IN');
+        tbody.innerHTML = htmlRows.join('');
+        window.currentVisibleBills = invoices;
+        window.updateBillBulkBar();
+        document.getElementById('total-unbilled').innerText = '₹' + totalInvoiced.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
     }
 
     window.filterBills = function() {
@@ -105,17 +276,23 @@
         const statusFilter = document.getElementById('billStatusFilter') ? document.getElementById('billStatusFilter').value : 'active';
 
         const filtered = globalInvoicesList.filter(inv => {
+            const billNo = (inv.bill_number || '').toLowerCase();
+            if (billNo.startsWith('external-')) return false;
+
             const isCancelled = inv.status === 'Cancelled';
             if (statusFilter === 'active' && isCancelled) return false;
             if (statusFilter === 'cancelled' && !isCancelled) return false;
 
-            const billNo = (inv.bill_number || '').toLowerCase();
             const clientName = (inv.clients?.display_name || '').toLowerCase();
             const service = (inv.service_name || '').toLowerCase();
             
             const d = new Date(inv.generated_date || inv.created_at);
             
-            const amount = inv.amount ? inv.amount.toString() : '';
+            // Check inclusive/exclusive display amount matching the filter
+            const baseAmt = parseFloat(inv.amount) || 0;
+            const calc = window.getGstCalculation(inv.firm_id, inv.client_id, baseAmt);
+            const displayAmt = calc.total;
+            const amount = displayAmt ? displayAmt.toString() : '';
 
             // Global search checks bill no or client name
             const globalMatch = !globalQuery || billNo.includes(globalQuery) || clientName.includes(globalQuery);
@@ -150,12 +327,26 @@
     window.exportBillingToCSV = function() {
         const bills = window.currentFilteredBills || globalInvoicesList || [];
         if (bills.length === 0) {
-            alert("No bills available to export.");
+            showToast("No bills available to export.");
             return;
         }
 
         // Define CSV headers
-        const headers = ['Bill No', 'Client Name', 'Service Description', 'Date', 'Amount', 'Status'];
+        const headers = [
+            'Bill No', 
+            'Client Name', 
+            'Service Description', 
+            'Date', 
+            'Taxable Value', 
+            'CGST', 
+            'SGST', 
+            'IGST', 
+            'Round Off',
+            'Total Invoice Value', 
+            'Billing Firm GSTIN', 
+            'Client GSTIN', 
+            'Status'
+        ];
         
         // Map data to rows
         const rows = bills.map(inv => {
@@ -166,10 +357,36 @@
             const d = new Date(inv.generated_date || inv.created_at);
             const dateStr = d.toLocaleDateString('en-IN', {day:'numeric', month:'short', year:'numeric'});
             
-            const amount = inv.amount || 0;
+            const baseAmt = parseFloat(inv.amount) || 0;
+            const calc = window.getGstCalculation(inv.firm_id, inv.client_id, baseAmt);
+            
+            const taxable = baseAmt;
+            const cgst = calc.hasGst ? calc.cgst : 0;
+            const sgst = calc.hasGst ? calc.sgst : 0;
+            const igst = calc.hasGst ? calc.igst : 0;
+            const roundOff = calc.roundOff || 0;
+            const totalVal = calc.total;
+            
+            const firmGst = calc.hasGst ? calc.firmGst : '';
+            const clientGst = calc.clientGst || '';
+            
             const status = inv.status || 'GENERATED';
 
-            return [billNo, clientName, service, dateStr, amount, status].join(',');
+            return [
+                billNo, 
+                clientName, 
+                service, 
+                dateStr, 
+                taxable.toFixed(2), 
+                cgst.toFixed(2), 
+                sgst.toFixed(2), 
+                igst.toFixed(2), 
+                roundOff.toFixed(2),
+                totalVal.toFixed(2), 
+                firmGst, 
+                clientGst, 
+                status
+            ].join(',');
         });
 
         // Combine headers and rows
@@ -180,15 +397,91 @@
         const link = document.createElement("a");
         const url = URL.createObjectURL(blob);
         link.setAttribute("href", url);
-        link.setAttribute("download", "Billing_Export_" + new Date().toISOString().split('T')[0] + ".csv");
+        link.setAttribute("download", "billing_export_" + new Date().toISOString().substring(0, 10) + ".csv");
         link.style.visibility = 'hidden';
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
     }
     
-    window.openAutoInvoiceModal = function(task) { 
+    window.toggleInvAlreadyBilled = function(checkbox) {
+        const firmContainer = document.getElementById('invFirmSelectContainer');
+        const proposedContainer = document.getElementById('invProposedBillNumberContainer');
+        const gstBreakdown = document.getElementById('autoInvoiceGstBreakdown');
+        const submitBtn = document.getElementById('generateInvBtn');
+        
+        if (checkbox.checked) {
+            if (firmContainer) firmContainer.classList.add('hidden');
+            if (proposedContainer) proposedContainer.classList.add('hidden');
+            if (gstBreakdown) gstBreakdown.classList.add('hidden');
+            if (submitBtn) submitBtn.innerText = "Mark as Billed";
+        } else {
+            if (firmContainer) firmContainer.classList.remove('hidden');
+            if (submitBtn) submitBtn.innerText = "Generate & Save";
+            window.updateAutoInvoiceProposedNumber();
+        }
+    }
+
+    window.openAutoInvoiceModal = async function(task) { 
         window.autoInvoiceTask = task; 
+        
+        // Retrieve default firm
+        let defaultFirmId = null;
+        try {
+            const { data: gstSetting } = await supabaseClient.from('app_settings').select('setting_value').eq('setting_key', 'office_os_default_gst_firm').maybeSingle();
+            if (gstSetting) defaultFirmId = gstSetting.setting_value;
+        } catch(e) {
+            console.error("Error fetching default firm setting:", e);
+        }
+
+        const firmSelect = document.getElementById('invFirmSelect');
+        if (firmSelect) {
+            firmSelect.innerHTML = '<option value="">-- Select Billing Firm --</option>';
+            if (!window.globalBillingFirmsList || window.globalBillingFirmsList.length === 0) {
+                try {
+                    const { data: firms } = await supabaseClient.from('billing_firms').select('*');
+                    window.globalBillingFirmsList = firms || [];
+                } catch (e) {
+                    console.error("Error fetching billing firms:", e);
+                }
+            }
+            if (window.globalBillingFirmsList) {
+                window.globalBillingFirmsList.forEach(f => {
+                    const isSelected = f.id === defaultFirmId ? 'selected' : '';
+                    firmSelect.innerHTML += `<option value="${f.id}" ${isSelected}>${f.firm_name}</option>`;
+                });
+                if (defaultFirmId) {
+                    firmSelect.value = defaultFirmId;
+                }
+            }
+        }
+
+        const titleEl = document.getElementById('autoInvoiceTitle');
+        const descEl = document.getElementById('autoInvoiceDesc');
+        const cancelBtn = document.getElementById('autoInvoiceCancelBtn');
+
+        if (task && task.is_subsidy) {
+            if (titleEl) titleEl.innerText = "Prepare Subsidy Bill";
+            if (descEl) descEl.innerText = "Enter billing details to prepare the invoice for this subsidy case.";
+            if (cancelBtn) cancelBtn.innerText = "Cancel";
+        } else {
+            if (titleEl) titleEl.innerText = "Task Completed!";
+            if (descEl) descEl.innerText = "Would you like to generate an invoice for this service?";
+            if (cancelBtn) cancelBtn.innerText = "Skip";
+        }
+
+        const proposedContainer = document.getElementById('invProposedBillNumberContainer');
+        if (proposedContainer) proposedContainer.classList.add('hidden');
+        
+        const gstBreakdown = document.getElementById('autoInvoiceGstBreakdown');
+        if (gstBreakdown) gstBreakdown.classList.add('hidden');
+
+        const alreadyBilledCb = document.getElementById('invAlreadyBilled');
+        if (alreadyBilledCb) {
+            alreadyBilledCb.checked = false;
+            window.toggleInvAlreadyBilled(alreadyBilledCb);
+        }
+
         if(task) {
             document.getElementById('invClientName').innerText = task.clients?.display_name || 'Unknown Client';
             document.getElementById('invServiceName').innerText = task.services?.service_type || task.custom_task_name || 'Task';
@@ -200,6 +493,107 @@
             }
         }
         document.getElementById('autoInvoiceOverlay').classList.remove('hidden'); 
+
+        // Automatically trigger calculation/number preview if a firm is pre-selected
+        if (firmSelect && firmSelect.value) {
+            window.updateAutoInvoiceProposedNumber();
+        }
+    }
+    
+    window.updateAutoInvoiceProposedNumber = async function() {
+        const firmId = document.getElementById('invFirmSelect').value;
+        const container = document.getElementById('invProposedBillNumberContainer');
+        const display = document.getElementById('invProposedBillNumberDisplay');
+        const gstBreakdown = document.getElementById('autoInvoiceGstBreakdown');
+
+        if (!firmId) {
+            if (container) container.classList.add('hidden');
+            if (gstBreakdown) gstBreakdown.classList.add('hidden');
+            return;
+        }
+        
+        if (display) display.innerHTML = '<i class="fa-solid fa-spinner fa-spin text-sm"></i>';
+        if (container) container.classList.remove('hidden');
+        
+        try {
+            const proposedNum = await getNextInvoiceNumber(firmId);
+            if (display) display.innerText = proposedNum;
+        } catch (e) {
+            console.error("Error fetching next invoice number:", e);
+            if (display) display.innerText = "Error";
+        }
+
+        // Check if the selected firm has GST registered using getGstCalculation
+        let hasGst = false;
+        if (window.autoInvoiceTask) {
+            const calc = window.getGstCalculation(firmId, window.autoInvoiceTask.client_id, 0);
+            hasGst = calc.hasGst;
+        }
+
+        if (hasGst) {
+            if (gstBreakdown) gstBreakdown.classList.remove('hidden');
+            recalculateAutoInvoiceGst();
+        } else {
+            if (gstBreakdown) gstBreakdown.classList.add('hidden');
+        }
+    }
+
+    window.recalculateAutoInvoiceGst = function() {
+        const firmId = document.getElementById('invFirmSelect').value;
+        const gstBreakdown = document.getElementById('autoInvoiceGstBreakdown');
+        if (!firmId || !window.autoInvoiceTask) {
+            if (gstBreakdown) gstBreakdown.classList.add('hidden');
+            return;
+        }
+
+        const baseVal = parseFloat(document.getElementById('invAmount').value) || 0;
+        const calc = window.getGstCalculation(firmId, window.autoInvoiceTask.client_id, baseVal);
+
+        if (!calc.hasGst) {
+            if (gstBreakdown) gstBreakdown.classList.add('hidden');
+            return;
+        }
+
+        if (gstBreakdown) gstBreakdown.classList.remove('hidden');
+
+        const taxableDisplay = document.getElementById('autoInvoiceTaxableDisplay');
+        const cgstDisplay = document.getElementById('autoInvoiceCgstDisplay');
+        const sgstDisplay = document.getElementById('autoInvoiceSgstDisplay');
+        const igstDisplay = document.getElementById('autoInvoiceIgstDisplay');
+        const roundOffDisplay = document.getElementById('autoInvoiceRoundOffDisplay');
+        const totalDisplay = document.getElementById('autoInvoiceTotalDisplay');
+
+        const cgstRow = document.getElementById('autoInvoiceCgstRow');
+        const sgstRow = document.getElementById('autoInvoiceSgstRow');
+        const igstRow = document.getElementById('autoInvoiceIgstRow');
+        const roundOffRow = document.getElementById('autoInvoiceRoundOffRow');
+
+        if (taxableDisplay) taxableDisplay.innerText = '₹' + calc.taxable.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        
+        if (calc.gstType === 'IGST') {
+            if (cgstRow) cgstRow.classList.add('hidden');
+            if (sgstRow) sgstRow.classList.add('hidden');
+            if (igstRow) igstRow.classList.remove('hidden');
+            if (igstDisplay) igstDisplay.innerText = '₹' + calc.igst.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        } else {
+            if (cgstRow) cgstRow.classList.remove('hidden');
+            if (sgstRow) sgstRow.classList.remove('hidden');
+            if (igstRow) igstRow.classList.add('hidden');
+            if (cgstDisplay) cgstDisplay.innerText = '₹' + calc.cgst.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            if (sgstDisplay) sgstDisplay.innerText = '₹' + calc.sgst.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        }
+        
+        if (calc.roundOff !== 0) {
+            if (roundOffRow) roundOffRow.classList.remove('hidden');
+            if (roundOffDisplay) {
+                const formattedRoundOff = calc.roundOff > 0 ? '+₹' + calc.roundOff.toFixed(2) : '-₹' + Math.abs(calc.roundOff).toFixed(2);
+                roundOffDisplay.innerText = formattedRoundOff;
+            }
+        } else {
+            if (roundOffRow) roundOffRow.classList.add('hidden');
+        }
+        
+        if (totalDisplay) totalDisplay.innerText = '₹' + calc.total.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
     }
     
     window.closeAutoInvoiceModal = function() { 
@@ -209,47 +603,95 @@
     }
     
     window.generateInvoice = async function() {
+        const alreadyBilled = document.getElementById('invAlreadyBilled')?.checked;
+        const firmId = document.getElementById('invFirmSelect').value;
+        if (!alreadyBilled && !firmId) {
+            showToast("Please select a Billing Firm.");
+            return;
+        }
+
         const amount = document.getElementById('invAmount').value; 
         const btn = document.getElementById('generateInvBtn'); 
         const originalText = btn.innerHTML;
-        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Generating...';
+        btn.innerHTML = alreadyBilled ? '<i class="fa-solid fa-spinner fa-spin"></i> Saving...' : '<i class="fa-solid fa-spinner fa-spin"></i> Generating...';
         
         let task = window.autoInvoiceTask;
         if (!task) {
-            alert("Task data lost. Please create invoice manually.");
+            showToast("Task data lost. Please create invoice manually.");
             btn.innerHTML = originalText;
             return;
         }
 
+        // Amount saved to DB is the exclusive base rate
+        const baseVal = parseFloat(amount) || 0;
+
         try {
-            const billNo = await getNextInvoiceNumber();
+            const billNo = alreadyBilled ? ('EXTERNAL-' + Date.now()) : await getNextInvoiceNumber(firmId);
+            const serviceName = task.services?.service_type || task.custom_task_name || 'General Service';
             const { error } = await supabaseClient.from('invoices').insert([{ 
-                task_id: task.task_id || null, 
+                task_id: task.task_id || task.id || null, 
                 client_id: task.client_id, 
-                service_name: task.services?.service_type || task.custom_task_name || 'General Service', 
-                amount: parseFloat(amount) || 0, 
-                status: 'Unpaid', 
+                firm_id: alreadyBilled ? null : firmId,
+                service_name: serviceName, 
+                amount: baseVal, 
+                status: alreadyBilled ? 'Paid' : 'Unpaid', 
                 bill_number: billNo, 
                 generated_date: new Date().toISOString() 
             }]);
             
             if (error) throw error;
+
+            // Add bill in work history
+            const billTaskId = task.task_id || task.id || null;
+            const billHistoryNote = `[BILL_GENERATED] Service: ${serviceName} | Bill No: ${billNo} | Amount: ₹${baseVal}`;
+            const { error: logError } = await supabaseClient.from('task_logs').insert([{
+                client_id: task.client_id,
+                task_id: billTaskId,
+                user_id: (typeof currentUser !== 'undefined' && currentUser ? currentUser.id : null),
+                note: billHistoryNote,
+                timestamp: new Date().toISOString()
+            }]);
+            if (logError) {
+                console.error("Error creating billing history log:", logError);
+            }
+
+            showToast(alreadyBilled ? "Billed status updated successfully!" : "Bill prepared successfully!");
             document.getElementById('autoInvoiceOverlay').classList.add('hidden'); 
             window.autoInvoiceTask = null;
             if (typeof globalRefresh === 'function') globalRefresh();
         } catch (err) { 
-            alert("Database Error: " + err.message); 
+            showToast("Database Error: " + err.message); 
             btn.innerHTML = originalText; 
         }
     }
 
     window.openCreateBillModal = async function() {
-        document.getElementById('createBillModalTitle').innerHTML = '<i class="fa-solid fa-file-invoice mr-2"></i> Create New Bill'; document.getElementById('editBillId').value = ''; 
+        if (document.getElementById('billMode')) document.getElementById('billMode').value = 'bill';
+        document.getElementById('createBillModalTitle').innerHTML = '<i class="fa-solid fa-file-invoice mr-2"></i> Create New Bill'; 
+        document.getElementById('editBillId').value = ''; 
         document.getElementById('proposedBillNumberContainer').classList.add('hidden');
         const firmSelect = document.getElementById('billFirmSelect'); firmSelect.innerHTML = '<option value="">-- Select Billing Firm --</option>';
         const { data: firms } = await supabaseClient.from('billing_firms').select('*'); if(firms) firms.forEach(f => firmSelect.innerHTML += `<option value="${f.id}">${f.firm_name}</option>`);
         const datalist = document.getElementById('billClientDatalist'); datalist.innerHTML = ''; globalClientsList.forEach(c => datalist.innerHTML += `<option value="${c.display_name}"></option>`);
-        document.getElementById('billClientSearch').value = ''; document.getElementById('billServiceDetails').value = ''; document.getElementById('billAmount').value = '0';
+        document.getElementById('billClientSearch').value = ''; 
+        document.getElementById('billServiceDetails').value = ''; 
+        document.getElementById('billServiceDetails').placeholder = 'e.g., Audit Fees for FY 23-24';
+        document.getElementById('billAmount').value = '0';
+        document.getElementById('createBillModal').classList.remove('hidden');
+    }
+
+    window.openCreateCreditNoteModal = async function() {
+        if (document.getElementById('billMode')) document.getElementById('billMode').value = 'credit_note';
+        document.getElementById('createBillModalTitle').innerHTML = '<i class="fa-solid fa-credit-card mr-2"></i> Create Credit Note'; 
+        document.getElementById('editBillId').value = ''; 
+        document.getElementById('proposedBillNumberContainer').classList.add('hidden');
+        const firmSelect = document.getElementById('billFirmSelect'); firmSelect.innerHTML = '<option value="">-- Select Billing Firm --</option>';
+        const { data: firms } = await supabaseClient.from('billing_firms').select('*'); if(firms) firms.forEach(f => firmSelect.innerHTML += `<option value="${f.id}">${f.firm_name}</option>`);
+        const datalist = document.getElementById('billClientDatalist'); datalist.innerHTML = ''; globalClientsList.forEach(c => datalist.innerHTML += `<option value="${c.display_name}"></option>`);
+        document.getElementById('billClientSearch').value = ''; 
+        document.getElementById('billServiceDetails').value = ''; 
+        document.getElementById('billServiceDetails').placeholder = 'e.g., Credit Note for waiver of fees';
+        document.getElementById('billAmount').value = '0';
         document.getElementById('createBillModal').classList.remove('hidden');
     }
 
@@ -265,13 +707,18 @@
         display.innerHTML = '<i class="fa-solid fa-spinner fa-spin text-sm"></i>';
         container.classList.remove('hidden');
         
-        const proposedNum = await getNextInvoiceNumber(firmId);
+        const mode = document.getElementById('billMode')?.value || 'bill';
+        const isCN = (mode === 'credit_note');
+        const proposedNum = await getNextInvoiceNumber(firmId, isCN);
         display.innerText = proposedNum;
     }
 
     window.editInvoice = async function(id) {
         const inv = globalInvoicesList.find(i => i.invoice_id == id || i.id == id); if(!inv) return;
-        document.getElementById('createBillModalTitle').innerHTML = '<i class="fa-solid fa-pen mr-2"></i> Edit Bill Details'; document.getElementById('editBillId').value = inv.invoice_id !== undefined ? inv.invoice_id : inv.id;
+        const isCN = parseFloat(inv.amount) < 0;
+        if (document.getElementById('billMode')) document.getElementById('billMode').value = isCN ? 'credit_note' : 'bill';
+        document.getElementById('createBillModalTitle').innerHTML = isCN ? '<i class="fa-solid fa-pen mr-2"></i> Edit Credit Note Details' : '<i class="fa-solid fa-pen mr-2"></i> Edit Bill Details'; 
+        document.getElementById('editBillId').value = inv.invoice_id !== undefined ? inv.invoice_id : inv.id;
         
         const container = document.getElementById('proposedBillNumberContainer');
         const display = document.getElementById('proposedBillNumberDisplay');
@@ -281,7 +728,9 @@
         const firmSelect = document.getElementById('billFirmSelect'); firmSelect.innerHTML = '<option value="">-- Select Billing Firm --</option>';
         const { data: firms } = await supabaseClient.from('billing_firms').select('*'); if(firms) { firms.forEach(f => { const selected = inv.firm_id === f.id ? 'selected' : ''; firmSelect.innerHTML += `<option value="${f.id}" ${selected}>${f.firm_name}</option>`; }); }
         const datalist = document.getElementById('billClientDatalist'); datalist.innerHTML = ''; globalClientsList.forEach(c => datalist.innerHTML += `<option value="${c.display_name}"></option>`);
-        document.getElementById('billClientSearch').value = inv.clients?.display_name || ''; document.getElementById('billServiceDetails').value = inv.service_name; document.getElementById('billAmount').value = inv.amount;
+        document.getElementById('billClientSearch').value = inv.clients?.display_name || ''; 
+        document.getElementById('billServiceDetails').value = inv.service_name; 
+        document.getElementById('billAmount').value = Math.abs(parseFloat(inv.amount) || 0);
         document.getElementById('createBillModal').classList.remove('hidden');
     }
 
@@ -289,7 +738,7 @@
         if(!confirm("Are you absolutely sure you want to cancel this bill?\n\nThe bill number will be permanently marked as CANCELLED.")) return;
         const pkColumn = (globalInvoicesList.length > 0 && globalInvoicesList[0].invoice_id !== undefined) ? 'invoice_id' : 'id';
         const { error } = await supabaseClient.from('invoices').update({ status: 'Cancelled' }).eq(pkColumn, id);
-        if (error) alert("Error cancelling bill: " + error.message);
+        if (error) showToast("Error cancelling bill: " + error.message);
         globalRefresh();
     }
 
@@ -297,22 +746,41 @@
 
     window.saveManualBill = async function() {
         const firmId = document.getElementById('billFirmSelect').value, clientName = document.getElementById('billClientSearch').value.trim(), service = document.getElementById('billServiceDetails').value.trim(), amt = document.getElementById('billAmount').value, editId = document.getElementById('editBillId').value;
-        if(!firmId || !clientName || !service || !amt) return alert("Please fill out all fields.");
-        const client = globalClientsList.find(c => c.display_name === clientName); if(!client) return alert("Please select a valid client from the dropdown.");
+        if(!firmId || !clientName || !service || !amt) return showToast("Please fill out all fields.");
+        const client = globalClientsList.find(c => c.display_name === clientName); if(!client) return showToast("Please select a valid client from the dropdown.");
         const btn = document.getElementById('saveManualBillBtn'); const originalText = btn.innerHTML; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Saving...';
+
+        const mode = document.getElementById('billMode')?.value || 'bill';
+        const isCN = (mode === 'credit_note');
+        let finalAmt = parseFloat(amt);
+        if (isCN) {
+            finalAmt = -Math.abs(finalAmt);
+        }
 
         try {
             const pkColumn = (globalInvoicesList.length > 0 && globalInvoicesList[0].invoice_id !== undefined) ? 'invoice_id' : 'id';
             if (editId) {
-                const { error } = await supabaseClient.from('invoices').update({ client_id: client.client_id, firm_id: firmId, service_name: service, amount: parseFloat(amt) }).eq(pkColumn, editId);
+                const { error } = await supabaseClient.from('invoices').update({ client_id: client.client_id, firm_id: firmId, service_name: service, amount: finalAmt }).eq(pkColumn, editId);
                 if (error) throw error;
             } else {
-                const billNo = await getNextInvoiceNumber(firmId);
-                const { error } = await supabaseClient.from('invoices').insert([{ client_id: client.client_id, firm_id: firmId, service_name: service, amount: parseFloat(amt), status: 'Unpaid', bill_number: billNo, generated_date: new Date().toISOString() }]);
+                const billNo = await getNextInvoiceNumber(firmId, isCN);
+                const { error } = await supabaseClient.from('invoices').insert([{ client_id: client.client_id, firm_id: firmId, service_name: service, amount: finalAmt, status: 'Unpaid', bill_number: billNo, generated_date: new Date().toISOString() }]);
                 if (error) throw error;
+
+                // Add bill in work history
+                const billHistoryNote = `[BILL_GENERATED] Service: ${service} | Bill No: ${billNo} | Amount: ₹${finalAmt}`;
+                const { error: logError } = await supabaseClient.from('task_logs').insert([{
+                    client_id: client.client_id,
+                    user_id: (typeof currentUser !== 'undefined' && currentUser ? currentUser.id : null),
+                    note: billHistoryNote,
+                    timestamp: new Date().toISOString()
+                }]);
+                if (logError) {
+                    console.error("Error creating manual billing history log:", logError);
+                }
             }
             window.closeCreateBillModal(); globalRefresh();
-        } catch(err) { console.error(err); alert("Database Error: " + err.message); btn.innerHTML = originalText; }
+        } catch(err) { console.error(err); showToast("Database Error: " + err.message); btn.innerHTML = originalText; }
     }
 
     window.printInvoice = function() {
@@ -353,6 +821,7 @@
     }
 
     window.numberToWords = function(num) {
+        num = Math.round(num);
         if (num === 0) return 'Zero';
         const a = ['','One ','Two ','Three ','Four ', 'Five ','Six ','Seven ','Eight ','Nine ','Ten ','Eleven ','Twelve ','Thirteen ','Fourteen ','Fifteen ','Sixteen ','Seventeen ','Eighteen ','Nineteen '];
         const b = ['', '', 'Twenty','Thirty','Forty','Fifty', 'Sixty','Seventy','Eighty','Ninety'];
@@ -367,12 +836,26 @@
         return str.trim();
     }
 
-    window.openInvoicePreview = function(inv) {
+    window.openInvoicePreview = async function(inv) {
         const watermark = document.getElementById('inv-cancelled-watermark');
         const printBtn = document.getElementById('inv-prev-print-btn');
         
         if (inv.status === 'Cancelled') { watermark.classList.remove('hidden'); printBtn.classList.add('hidden'); } 
         else { watermark.classList.add('hidden'); printBtn.classList.remove('hidden'); }
+
+        // Fetch gstin details dynamically on demand if not loaded yet
+        if (inv.firm_id && (!inv.billing_firms || !inv.billing_firms.gstin)) {
+            try {
+                const { data: firm } = await supabaseClient.from('billing_firms').select('gstin, firm_name').eq('id', inv.firm_id).maybeSingle();
+                if (firm) {
+                    if (!inv.billing_firms) inv.billing_firms = {};
+                    inv.billing_firms.gstin = firm.gstin;
+                    inv.billing_firms.firm_name = firm.firm_name;
+                }
+            } catch (e) {
+                console.error("Error fetching firm details:", e);
+            }
+        }
 
         const d = new Date(inv.generated_date || inv.created_at);
         document.getElementById('inv-prev-no').innerText = inv.bill_number || 'N/A';
@@ -389,6 +872,7 @@
         let phone = '';
         let logo = '';
         let qr = '';
+        let udyam = '';
 
         if (inv.billing_firms && inv.billing_firms.gstin && inv.billing_firms.gstin.trim() !== '') {
             gst = inv.billing_firms.gstin;
@@ -403,6 +887,7 @@
                 if (json.phone) phone = json.phone;
                 if (json.logo) logo = json.logo;
                 if (json.qr) qr = json.qr;
+                if (json.udyam) udyam = json.udyam;
             } catch (e) {
                 // Not JSON, use as plain GST
             }
@@ -426,9 +911,113 @@
             qrEl.classList.add('hidden');
         }
 
+        let hasGst = false;
         if (gst.trim() !== '' && !noGst) {
-            document.getElementById('inv-prev-gst').innerText = gst; gstBox.style.display = 'inline-block';
-        } else { gstBox.style.display = 'none'; }
+            hasGst = true;
+            document.getElementById('inv-prev-gst').innerText = gst; 
+            gstBox.style.display = 'inline-block';
+        } else { 
+            gstBox.style.display = 'none'; 
+        }
+
+        const udyamBox = document.getElementById('inv-prev-firm-udyam-box');
+        if (udyam && udyam.trim() !== '') {
+            document.getElementById('inv-prev-udyam').innerText = udyam;
+            udyamBox.style.display = 'inline-block';
+        } else {
+            udyamBox.style.display = 'none';
+        }
+
+        const cgstRow = document.getElementById('inv-prev-cgst-row');
+        const sgstRow = document.getElementById('inv-prev-sgst-row');
+        const igstRow = document.getElementById('inv-prev-igst-row');
+        const roundoffRow = document.getElementById('inv-prev-roundoff-row');
+        const totalLabel = document.getElementById('inv-prev-total-label');
+        const amtEl = document.getElementById('inv-prev-amt');
+        const cgstEl = document.getElementById('inv-prev-cgst');
+        const sgstEl = document.getElementById('inv-prev-sgst');
+        const igstEl = document.getElementById('inv-prev-igst');
+        const roundoffEl = document.getElementById('inv-prev-roundoff');
+
+        const baseVal = parseFloat(inv.amount) || 0;
+        const calc = window.getGstCalculation(inv.firm_id, inv.client_id, baseVal);
+        const isCN = baseVal < 0;
+
+        const displayTaxable = Math.abs(calc.taxable);
+        const displayCgst = Math.abs(calc.cgst);
+        const displaySgst = Math.abs(calc.sgst);
+        const displayIgst = Math.abs(calc.igst);
+        const displayTotal = Math.abs(calc.total);
+
+        const titleTextEl = document.getElementById('inv-prev-title-text');
+        if (titleTextEl) titleTextEl.innerText = isCN ? 'Credit Note' : 'Invoice';
+
+        const noLabelEl = document.getElementById('inv-prev-no-label');
+        if (noLabelEl) noLabelEl.innerText = isCN ? 'Credit Note No' : 'Invoice No';
+
+        if (calc.hasGst) {
+            if (amtEl) amtEl.innerText = displayTaxable.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            
+            if (calc.gstType === 'IGST') {
+                if (cgstRow) cgstRow.classList.add('hidden');
+                if (sgstRow) sgstRow.classList.add('hidden');
+                if (igstRow) igstRow.classList.remove('hidden');
+                if (igstEl) igstEl.innerText = displayIgst.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            } else {
+                if (cgstRow) cgstRow.classList.remove('hidden');
+                if (sgstRow) sgstRow.classList.remove('hidden');
+                if (igstRow) igstRow.classList.add('hidden');
+                if (cgstEl) cgstEl.innerText = displayCgst.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                if (sgstEl) sgstEl.innerText = displaySgst.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            }
+            
+            const cnRoundOffRaw = displayTotal - (displayTaxable + displayCgst + displaySgst + displayIgst);
+            const cnRoundOff = Math.round(cnRoundOffRaw * 100) / 100;
+            if (cnRoundOff !== 0) {
+                if (roundoffRow) roundoffRow.classList.remove('hidden');
+                if (roundoffEl) {
+                    const formattedRoundOff = cnRoundOff > 0 ? '+' + cnRoundOff.toFixed(2) : cnRoundOff.toFixed(2);
+                    roundoffEl.innerText = formattedRoundOff;
+                }
+            } else {
+                if (roundoffRow) roundoffRow.classList.add('hidden');
+            }
+            
+            if (totalLabel) totalLabel.innerText = isCN ? "Total Credited (Inclusive of GST)" : "Total Due (Inclusive of GST)";
+            document.getElementById('inv-prev-total').innerText = '₹' + displayTotal.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            document.getElementById('inv-prev-words').innerText = "Rupees " + window.numberToWords(displayTotal);
+        } else {
+            if (amtEl) amtEl.innerText = displayTaxable.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            if (cgstRow) cgstRow.classList.add('hidden');
+            if (sgstRow) sgstRow.classList.add('hidden');
+            if (igstRow) igstRow.classList.add('hidden');
+            
+            const cnRoundOffRaw = displayTotal - displayTaxable;
+            const cnRoundOff = Math.round(cnRoundOffRaw * 100) / 100;
+            if (cnRoundOff !== 0) {
+                if (roundoffRow) roundoffRow.classList.remove('hidden');
+                if (roundoffEl) {
+                    const formattedRoundOff = cnRoundOff > 0 ? '+' + cnRoundOff.toFixed(2) : cnRoundOff.toFixed(2);
+                    roundoffEl.innerText = formattedRoundOff;
+                }
+            } else {
+                if (roundoffRow) roundoffRow.classList.add('hidden');
+            }
+            
+            if (totalLabel) totalLabel.innerText = isCN ? "Total Credited" : "Total Due";
+            document.getElementById('inv-prev-total').innerText = '₹' + displayTotal.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            document.getElementById('inv-prev-words').innerText = "Rupees " + window.numberToWords(displayTotal);
+        }
+
+        // Client GSTIN population
+        const clientGstBox = document.getElementById('inv-prev-client-gst-box');
+        const clientGstEl = document.getElementById('inv-prev-client-gst');
+        if (calc.clientGst && calc.clientGst.trim() !== '') {
+            if (clientGstEl) clientGstEl.innerText = calc.clientGst;
+            if (clientGstBox) clientGstBox.classList.remove('hidden');
+        } else {
+            if (clientGstBox) clientGstBox.classList.add('hidden');
+        }
 
         const emailEl = document.getElementById('inv-prev-email');
         if (email.trim() !== '') {
@@ -448,12 +1037,132 @@
 
         document.getElementById('inv-prev-client').innerText = inv.clients?.display_name || 'Unknown Client';
         document.getElementById('inv-prev-service').innerText = inv.service_name;
-        document.getElementById('inv-prev-amt').innerText = parseFloat(inv.amount).toLocaleString('en-IN', {minimumFractionDigits: 2});
-        document.getElementById('inv-prev-total').innerText = '₹' + parseFloat(inv.amount).toLocaleString('en-IN', {minimumFractionDigits: 2});
-        document.getElementById('inv-prev-words').innerText = "Rupees " + window.numberToWords(parseFloat(inv.amount));
 
         document.getElementById('invoicePreviewModal').classList.remove('hidden');
     }
 
     window.closeInvoicePreview = function() { document.getElementById('invoicePreviewModal').classList.add('hidden'); }
+
+    // ---------- Bulk bill download (multiple PDFs, as ZIP or separate files) ----------
+    window.selectedBillIds = window.selectedBillIds || new Set();
+    window.currentVisibleBills = window.currentVisibleBills || [];
+
+    const billIdOf = inv => String(inv.invoice_id !== undefined ? inv.invoice_id : inv.id);
+
+    window.updateBillBulkBar = function() {
+        const bar = document.getElementById('bill-bulk-bar');
+        if (!bar) return;
+        const n = window.selectedBillIds.size;
+        document.getElementById('bill-bulk-count').innerText = n;
+        bar.classList.toggle('hidden', n === 0);
+        const all = document.getElementById('bill-select-all');
+        if (all) {
+            const visible = window.currentVisibleBills.map(billIdOf);
+            const selVisible = visible.filter(id => window.selectedBillIds.has(id)).length;
+            all.checked = visible.length > 0 && selVisible === visible.length;
+            all.indeterminate = selVisible > 0 && selVisible < visible.length;
+        }
+    }
+
+    window.toggleBillSelection = function(id, on) {
+        if (on) window.selectedBillIds.add(String(id)); else window.selectedBillIds.delete(String(id));
+        window.updateBillBulkBar();
+    }
+
+    window.toggleAllBills = function(on) {
+        window.currentVisibleBills.forEach(inv => on ? window.selectedBillIds.add(billIdOf(inv)) : window.selectedBillIds.delete(billIdOf(inv)));
+        document.querySelectorAll('.bill-row-cb').forEach(cb => cb.checked = on);
+        window.updateBillBulkBar();
+    }
+
+    window.clearBillSelection = function() { window.toggleAllBills(false); window.selectedBillIds.clear(); window.updateBillBulkBar(); }
+
+    const loadScriptOnce = (src, globalName) => window[globalName] ? Promise.resolve() : new Promise((res, rej) => {
+        const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('Failed to load ' + src));
+        document.head.appendChild(s);
+    });
+
+    const safeFileName = s => String(s || 'bill').replace(/[\\/:*?"<>|]+/g, '-').trim() || 'bill';
+
+    const waitForImages = el => Promise.all([...el.querySelectorAll('img')].filter(i => !i.classList.contains('hidden') && i.src).map(img =>
+        img.complete ? Promise.resolve() : new Promise(r => { img.onload = img.onerror = r; })));
+
+    // Renders one invoice into the preview template and returns it as a PDF Blob.
+    async function renderInvoicePdfBlob(inv) {
+        await window.openInvoicePreview(inv);
+        const src = document.getElementById('print-invoice-area');
+        const holder = document.createElement('div');
+        holder.style.cssText = 'position:fixed;left:-10000px;top:0;width:820px;background:#fff;';
+        const clone = src.cloneNode(true);
+        clone.removeAttribute('id');
+        holder.appendChild(clone);
+        document.body.appendChild(holder);
+        try {
+            await waitForImages(clone);
+            return await html2pdf().set({
+                margin: [6, 6, 6, 6],
+                image: { type: 'jpeg', quality: 0.95 },
+                html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff', scrollX: 0, scrollY: 0, windowWidth: 820 },
+                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+                pagebreak: { mode: ['avoid-all'] }
+            }).from(clone).outputPdf('blob');
+        } finally {
+            document.body.removeChild(holder);
+        }
+    }
+
+    const triggerDownload = (blob, name) => {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob); a.download = name;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    };
+
+    window.bulkDownloadBills = async function(mode) {
+        const ids = window.selectedBillIds;
+        const bills = (globalInvoicesList || []).filter(inv => ids.has(billIdOf(inv)));
+        if (bills.length === 0) { showToast('Select at least one bill.'); return; }
+        const cancelled = bills.filter(b => b.status === 'Cancelled').length;
+        if (cancelled && !confirm(`${cancelled} selected bill(s) are cancelled and will be marked CANCELLED in the PDF. Continue?`)) return;
+
+        const bar = document.getElementById('bill-bulk-bar');
+        bar.querySelectorAll('button').forEach(b => b.disabled = true);
+        const countEl = document.getElementById('bill-bulk-count');
+        const modal = document.getElementById('invoicePreviewModal');
+        modal.style.visibility = 'hidden';
+
+        try {
+            await loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js', 'html2pdf');
+            if (mode === 'zip') await loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js', 'JSZip');
+
+            const zip = mode === 'zip' ? new JSZip() : null;
+            const used = new Map();
+            let failed = 0;
+            for (let i = 0; i < bills.length; i++) {
+                const inv = bills[i];
+                countEl.innerText = `Generating ${i + 1}/${bills.length}…`;
+                try {
+                    const blob = await renderInvoicePdfBlob(inv);
+                    let base = safeFileName(inv.bill_number || ('Bill-' + billIdOf(inv)));
+                    const k = used.get(base) || 0; used.set(base, k + 1);
+                    const name = (k ? `${base} (${k + 1})` : base) + '.pdf';
+                    if (zip) zip.file(name, blob);
+                    else { triggerDownload(blob, name); await new Promise(r => setTimeout(r, 400)); }
+                } catch (e) { console.error('Bill PDF failed', inv.bill_number, e); failed++; }
+            }
+            if (zip) {
+                countEl.innerText = 'Zipping…';
+                const zipBlob = await zip.generateAsync({ type: 'blob' });
+                triggerDownload(zipBlob, `Bills_${new Date().toISOString().slice(0, 10)}_${bills.length - failed}.zip`);
+            }
+            showToast(failed ? `Downloaded ${bills.length - failed} bill(s); ${failed} failed.` : `Downloaded ${bills.length} bill(s).`);
+        } catch (err) {
+            console.error(err); showToast('Bulk download failed: ' + err.message);
+        } finally {
+            modal.classList.add('hidden');
+            modal.style.visibility = '';
+            bar.querySelectorAll('button').forEach(b => b.disabled = false);
+            window.updateBillBulkBar();
+        }
+    }
 </script>

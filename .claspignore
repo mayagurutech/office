@@ -1,0 +1,18 @@
+# Ignore local development and build scripts from Google Apps Script deployment
+build.js
+package.json
+package-lock.json
+dist/**
+.git/**
+.gitignore
+.clasp.json
+work_logs.csv
+git_diff.txt
+local_diff_2.txt
+reconstructed_clients.json
+client_bulk_import_template.xlsx
+temp_clone/**
+scratch/**
+supabase/**
+.claude/**
+node_modules/**
