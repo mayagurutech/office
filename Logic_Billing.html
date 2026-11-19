@@ -1118,6 +1118,11 @@
                 // yet, words are positioned with a narrower fallback font but drawn in Inter,
                 // which swallows the spaces. Wait for the font inside the clone first.
                 onclone: async (doc) => {
+                    // Index.html sets `html { zoom: 0.92 }`. html2canvas ignores CSS zoom when
+                    // drawing text, so words get placed at 92% spacing but drawn full size and
+                    // the spaces vanish. Render the clone unzoomed.
+                    doc.documentElement.style.zoom = '1';
+                    doc.body.style.zoom = '1';
                     if (!doc.fonts) return;
                     const loads = [];
                     ['400', '500', '600', '700', '800', '900'].forEach(w => {
