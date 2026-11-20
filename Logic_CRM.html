@@ -2345,15 +2345,7 @@
         try {
             // 1. Process inserts in batches
             if (inserts.length > 0) {
-                const activeClients = (window.globalAllClientsList || []).filter(c => c.client_code);
-                let nextNum = 1;
-                activeClients.forEach(c => {
-                    const match = c.client_code.match(/CL-(\d+)/);
-                    if (match) {
-                        const num = parseInt(match[1], 10);
-                        if (num >= nextNum) nextNum = num + 1;
-                    }
-                });
+                let nextNum = await getNextClientCodeNum();
                 inserts.forEach(item => {
                     item.client_code = 'CL-' + String(nextNum).padStart(4, '0');
                     nextNum++;
@@ -2597,6 +2589,27 @@
         }
     };
 
+    // Highest CL-#### number currently in the database, plus one.
+    // Codes are zero-padded to 4 digits, so text ordering matches numeric ordering.
+    async function getNextClientCodeNum() {
+        const { data, error } = await supabaseClient
+            .from('clients')
+            .select('client_code')
+            .like('client_code', 'CL-%')
+            .order('client_code', { ascending: false })
+            .limit(1);
+        if (error) throw error;
+        let nextNum = 1;
+        const match = data && data[0] && data[0].client_code.match(/CL-(\d+)/);
+        if (match) nextNum = parseInt(match[1], 10) + 1;
+        // Also respect the cached list, in case it somehow holds a higher number
+        (window.globalAllClientsList || []).forEach(c => {
+            const m = c.client_code && c.client_code.match(/CL-(\d+)/);
+            if (m && parseInt(m[1], 10) >= nextNum) nextNum = parseInt(m[1], 10) + 1;
+        });
+        return nextNum;
+    }
+
     async function executeSaveClient(name, pan, gst, entity, services, freq, btn, originalText) {
         try {
             if (currentEditingClientId) {
@@ -2613,21 +2626,21 @@
                 }
             } else {
                 // CREATE NEW CLIENT
-                const activeClients = (window.globalAllClientsList || []).filter(c => c.client_code);
-                let nextNum = 1;
-                activeClients.forEach(c => {
-                    const match = c.client_code.match(/CL-(\d+)/);
-                    if (match) {
-                        const num = parseInt(match[1], 10);
-                        if (num >= nextNum) nextNum = num + 1;
-                    }
-                });
-                const nextCode = 'CL-' + String(nextNum).padStart(4, '0');
-
-                const { error } = await supabaseClient.from('clients').insert([{
-                    display_name: name, pan_number: pan, gstin: gst, entity_type: entity, standard_services: services, gst_frequency: freq, client_code: nextCode
-                }]);
-                if (error) throw error;
+                // Next code comes from the database, not the cached list, so clients
+                // added by others since this page loaded don't cause a duplicate code.
+                // Retry on a code collision (two people saving at the same moment).
+                let lastError = null;
+                for (let attempt = 0; attempt < 3; attempt++) {
+                    const nextCode = 'CL-' + String(await getNextClientCodeNum()).padStart(4, '0');
+                    const { error } = await supabaseClient.from('clients').insert([{
+                        display_name: name, pan_number: pan, gstin: gst, entity_type: entity, standard_services: services, gst_frequency: freq, client_code: nextCode
+                    }]);
+                    lastError = error;
+                    if (!error) break;
+                    const isCodeClash = error.code === '23505' && String(error.message || '').includes('client_code');
+                    if (!isCodeClash) break;
+                }
+                if (lastError) throw lastError;
             }
             
             closeEditClient();
