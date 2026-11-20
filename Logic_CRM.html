@@ -37,50 +37,45 @@
     function isLogMatchingTask(logNote, taskName, displayPeriod) {
         if (!logNote || !taskName || !displayPeriod) return false;
         
-        const cleanStr = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-        const noteClean = cleanStr(logNote);
-        const periodClean = cleanStr(displayPeriod);
-        
-        // The period must match
-        if (!noteClean.includes(periodClean)) return false;
-        
-        const taskClean = cleanStr(taskName);
-        
-        if (taskClean.includes('gstr1') || taskClean.includes('iff')) {
-            return noteClean.includes('gstr1') || 
-                   noteClean.includes('gst1') || 
-                   noteClean.includes('iff') || 
-                   noteClean.includes('filedsuccessfully');
+        const cleanStr = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+
+        // Which GST column a task label belongs to (GSTR-1 and IFF share one column)
+        const gstColumnOf = (label) => {
+            const c = cleanStr(label);
+            if (c.includes('gstr3b') || c.includes('gst3b')) return 'gstr3b';
+            if (c.includes('gstr1') || c.includes('gst1') || c.includes('iff') || c.includes('filedsuccessfully')) return 'gstr1';
+            if (c.includes('sent2b') || c.includes('send2b')) return 'send2b';
+            if (c.includes('2b')) return '2b';
+            if (c.includes('excel') || c.includes('tally')) return 'excel';
+            if (c.includes('data')) return 'data';
+            if (c.includes('call') || c.includes('whatsapp')) return 'call';
+            if (c.includes('bill')) return 'bill';
+            if (c.includes('generalremark')) return 'remark';
+            return null;
+        };
+
+        // Only the leading "[Task Name - Mon YYYY]" tag identifies the task; the note body
+        // is free text and must not be searched (words like "data" or "2B" in a remark
+        // would otherwise pull the log into other tasks' history).
+        let tag = null;
+        const tagMatch = String(logNote).match(/^\s*\[([^\]]+)\]/);
+        if (tagMatch) {
+            tag = tagMatch[1];
+        } else {
+            // Legacy format: "GST Action Completed: FILED SUCCESSFULLY - DEC 2024 ..." / "GST Action [FILED SUCCESSFULLY - DEC 2024]: ..."
+            const legacy = String(logNote).match(/^GST\s+Action(?:\s+Completed)?\s*:?\s*\[?([^\]:(]+)/i);
+            if (legacy) tag = legacy[1];
         }
-        
-        if (taskClean.includes('gstr3b')) {
-            return noteClean.includes('gstr3b') || 
-                   noteClean.includes('gst3b');
-        }
-        
-        if (taskClean.includes('excel') || taskClean.includes('tally')) {
-            return noteClean.includes('excel') || 
-                   noteClean.includes('tally');
-        }
-        
-        if (taskClean.includes('data')) {
-            return noteClean.includes('data');
-        }
-        
-        if (taskClean.includes('call') || taskClean.includes('whatsapp')) {
-            return noteClean.includes('call') || 
-                   noteClean.includes('whatsapp');
-        }
-        
-        if (taskClean.includes('2b')) {
-            return noteClean.includes('2b');
-        }
-        
-        if (taskClean.includes('remark')) {
-            return noteClean.includes('remark');
-        }
-        
-        return noteClean.includes(taskClean);
+        if (!tag) return false;
+
+        // The period must match, and must be inside the tag
+        if (!cleanStr(tag).includes(cleanStr(displayPeriod))) return false;
+
+        const taskCol = gstColumnOf(taskName);
+        if (taskCol) return gstColumnOf(tag) === taskCol;
+
+        const taskPart = tag.replace(/\s*-\s*[A-Za-z]{3,9}\s+\d{4}\s*$/, '');
+        return cleanStr(taskPart) === cleanStr(taskName);
     }
 
     console.log("CRM Module loaded - version with deterministic periods 2026-05-20.06");
